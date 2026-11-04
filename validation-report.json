@@ -1,0 +1,173 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "opencv": "4.14.0",
+    "numpy": "2.5.4",
+    "pyside6": "6.12.0",
+    "pyqtgraph": "0.14.0"
+  },
+  "tests": {
+    "passed": 128,
+    "failures": 0,
+    "errors": 0
+  },
+  "native_sample_check": {
+    "native_shape": [
+      1920,
+      2560
+    ],
+    "measurements": [
+      {
+        "scale": 1,
+        "median_processing_ms": 100.14649492222816,
+        "dx_px": -6.982407202886407,
+        "dy_px": -18.979327226458054,
+        "validity": "valid",
+        "reasons": []
+      },
+      {
+        "scale": 0.5,
+        "median_processing_ms": 24.45193100720644,
+        "dx_px": -6.482831644898397,
+        "dy_px": -18.140983723836598,
+        "validity": "valid",
+        "reasons": []
+      },
+      {
+        "scale": 0.25,
+        "median_processing_ms": 5.203163949772716,
+        "dx_px": -8.333222475320326,
+        "dy_px": -18.989535821661207,
+        "validity": "valid",
+        "reasons": []
+      }
+    ],
+    "analytics_tabs": [
+      {
+        "tab": "Image",
+        "duration_ms": 23.446202976629138,
+        "arrays": [
+          "reference",
+          "live",
+          "histogram_reference",
+          "center_line_reference",
+          "histogram_live",
+          "center_line_live"
+        ]
+      },
+      {
+        "tab": "Preprocessing",
+        "duration_ms": 111.07081000227481,
+        "arrays": [
+          "reference",
+          "live",
+          "blur_reference",
+          "blur_live",
+          "centered_reference",
+          "centered_live",
+          "window",
+          "prepared_reference",
+          "prepared_live"
+        ]
+      },
+      {
+        "tab": "Fourier",
+        "duration_ms": 1093.7820250401273,
+        "arrays": [
+          "log_magnitude_reference",
+          "phase_reference",
+          "log_magnitude_live",
+          "phase_live",
+          "normalized_cross_phase"
+        ]
+      },
+      {
+        "tab": "Correlation",
+        "duration_ms": 396.8642030376941,
+        "arrays": [
+          "reconstructed_correlation",
+          "peak_zoom",
+          "correlation_horizontal",
+          "correlation_vertical"
+        ]
+      },
+      {
+        "tab": "Alignment",
+        "duration_ms": 40.44045996852219,
+        "arrays": [
+          "before_red_cyan",
+          "compensated_red_cyan",
+          "difference_before",
+          "difference_after_valid_overlap"
+        ]
+      },
+      {
+        "tab": "Performance",
+        "duration_ms": 0.023790053091943264,
+        "arrays": []
+      },
+      {
+        "tab": "Slot \u03b2",
+        "duration_ms": 219.8612029897049,
+        "arrays": [
+          "slot_candidates_beta"
+        ]
+      }
+    ],
+    "camera_discovery": {
+      "Basler": [],
+      "IDS": []
+    },
+    "export_files": [
+      "metadata.json",
+      "reference.png",
+      "current.png",
+      "analytics.npz"
+    ]
+  },
+  "demo_replay": {
+    "source": "640x480 synthetic Demo, offscreen GUI",
+    "stages": [
+      {
+        "stage": "off",
+        "elapsed_s": 4.916889203013852,
+        "rss_mib": 175.4921875,
+        "camera_fps": 29.917887274888283,
+        "measurement_fps": 29.857983878125573,
+        "analytics_jobs": 0,
+        "history": 144,
+        "state": "OUTSIDE TOLERANCE",
+        "frame_age_ms": 32.24064002279192
+      },
+      {
+        "stage": "fourier_live",
+        "elapsed_s": 10.916465235990472,
+        "rss_mib": 208.125,
+        "camera_fps": 29.845162956003886,
+        "measurement_fps": 29.857935225586967,
+        "analytics_jobs": 6,
+        "history": 318,
+        "state": "OUTSIDE TOLERANCE",
+        "frame_age_ms": 33.490183064714074
+      },
+      {
+        "stage": "off_again",
+        "elapsed_s": 15.916599691961892,
+        "rss_mib": 208.1328125,
+        "camera_fps": 29.843689443943735,
+        "measurement_fps": 29.831345268467704,
+        "analytics_jobs": 6,
+        "history": 467,
+        "state": "OUTSIDE TOLERANCE",
+        "frame_age_ms": 42.15124493930489
+      }
+    ],
+    "heartbeat_max_gap_ms": 113.15262306015939,
+    "heartbeat_count": 396
+  },
+  "limits": [
+    "No camera was connected; SDK discovery and adapter behavior were tested, not physical acquisition.",
+    "Native sample timings exclude camera acquisition and GUI display.",
+    "RSS includes allocator and GUI caches; separate regression tests verify diagnostic arrays become collectible after cancellation."
+  ]
+}
