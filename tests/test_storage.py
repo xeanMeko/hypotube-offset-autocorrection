@@ -108,6 +108,15 @@ def test_profile_roundtrip(tmp_path):
     assert (tolerance, hz, camera) == (1.5, 0.5, settings)
 
 
+@pytest.mark.parametrize("method", ["template", "unknown"])
+def test_profile_rejects_unsupported_matching_method(tmp_path, method):
+    path = tmp_path / "unsupported.json"
+    profile = {"format_version": 1, "configuration": {"method": method}}
+    path.write_text(json.dumps(profile))
+    with pytest.raises(ValueError, match="Only phase correlation is supported"):
+        load_profile(path)
+
+
 def test_motion_profile_roundtrip_keeps_original_loader_contract(tmp_path):
     from measure_shift.motion import MotionConfig
     motion = MotionConfig(motor_current_ma=800, jog_distance=2, motor_speed=400,

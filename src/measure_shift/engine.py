@@ -38,8 +38,8 @@ def _validate_image(image: np.ndarray) -> None:
 
 
 def _validate_config(config: MatchConfig) -> None:
-    if config.method not in {"phase", "template"}:
-        raise ValueError("Unknown matching method")
+    if config.method != "phase":
+        raise ValueError("Only phase correlation is supported")
     if config.scale not in {1.0, 0.5, 0.25}:
         raise ValueError("Analysis scale must be 1, 1/2, or 1/4")
     if not isinstance(config.blur_size, int) or not 1 <= config.blur_size <= 31 or config.blur_size % 2 == 0:
@@ -48,10 +48,6 @@ def _validate_config(config: MatchConfig) -> None:
         raise ValueError("Invalid quality thresholds")
     if not math.isfinite(config.min_texture) or config.min_texture < 0:
         raise ValueError("Invalid texture threshold")
-    if config.method == "template" and config.region.kind != "rectangle":
-        raise ValueError("Template matching requires a rectangular reference region")
-    if config.method != "phase" and getattr(config, "live_region", None) is not None:
-        raise ValueError("Independent live regions are supported only for phase correlation")
 
 
 def _resize(image: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -101,7 +97,7 @@ def _circle_window(shape: tuple[int, int], blur_size: int) -> np.ndarray:
 
 def _prepare_plane(raw: np.ndarray, config: MatchConfig, window: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     blurred = cv2.GaussianBlur(raw, (config.blur_size, config.blur_size), 0).astype(np.float32)
-    if config.method == "phase" and config.region.kind == "circle":
+    if config.region.kind == "circle":
         mean = float(np.sum(blurred * window, dtype=np.float64) / window.sum(dtype=np.float64))
         texture = float(blurred[window > 0].std())
     else:
@@ -118,31 +114,14 @@ def _prepare_reference(image: np.ndarray, config: MatchConfig, *, intermediates:
     _validate_image(image)
     _validate_config(config)
     x, y, width, height = config.region.bounds(image.shape)
-    if config.method == "template":
-        # Resize the entire coordinate grid before extracting the template.
-        # Resizing an odd-width crop independently would give it a different
-        # pixel scale from the full search image.
-        full_h, full_w = image.shape
-        out_w, out_h = round(full_w * config.scale), round(full_h * config.scale)
-        resized = _resize(image, out_w, out_h)
-        scale_x, scale_y = full_w / out_w, full_h / out_h
-        left, top = round(x / scale_x), round(y / scale_y)
-        right, bottom = round((x + width) / scale_x), round((y + height) / scale_y)
-        raw = resized[top:bottom, left:right].copy()
-        if min(raw.shape) < 8:
-            raise ValueError("Template must be at least 8 × 8 pixels at the selected scale")
-        origin = (left * scale_x, top * scale_y)
-        window = np.ones(raw.shape, dtype=np.float32)
-        live_size = (out_w, out_h)
-    else:
-        out_w, out_h = round(width * config.scale), round(height * config.scale)
-        raw = _resize(image[y:y + height, x:x + width], out_w, out_h)
-        scale_x, scale_y = width / out_w, height / out_h
-        origin = (float(x), float(y))
-        window = (_circle_window(raw.shape, config.blur_size)
-                  if config.region.kind == "circle"
-                  else cv2.createHanningWindow((out_w, out_h), cv2.CV_32F))
-        live_size = (out_w, out_h)
+    out_w, out_h = round(width * config.scale), round(height * config.scale)
+    raw = _resize(image[y:y + height, x:x + width], out_w, out_h)
+    scale_x, scale_y = width / out_w, height / out_h
+    origin = (float(x), float(y))
+    window = (_circle_window(raw.shape, config.blur_size)
+              if config.region.kind == "circle"
+              else cv2.createHanningWindow((out_w, out_h), cv2.CV_32F))
+    live_size = (out_w, out_h)
     blurred, centered, prepared, texture = _prepare_plane(raw, config, window)
     result = {"blur_reference": blurred, "prepared_reference": prepared,
               "window": window, "reference_origin": origin,
@@ -151,7 +130,7 @@ def _prepare_reference(image: np.ndarray, config: MatchConfig, *, intermediates:
               "bounds": (x, y, width, height), "live_size": live_size}
     if intermediates:
         result.update(reference=raw, centered_reference=centered)
-    if config.method == "phase" and not intermediates:
+    if not intermediates:
         result["phase_reference"] = _phase_canvas(prepared)
     return result
 
@@ -160,21 +139,16 @@ def _prepare_live(image: np.ndarray, config: MatchConfig, reference: dict[str, A
     _validate_image(image)
     if image.shape != reference["native_shape"]:
         raise ValueError("Image geometry changed; capture a new reference")
-    if config.method == "template":
-        raw = _resize(image, *reference["live_size"])
-        origin = (0.0, 0.0)
-        window = np.ones(raw.shape, dtype=np.float32)
-    else:
-        x, y, width, height = reference["bounds"]
-        live_region = getattr(config, "live_region", None)
-        if live_region is not None:
-            live_x, live_y, live_width, live_height = live_region.bounds(image.shape)
-            if (live_width, live_height) != (width, height):
-                raise ValueError("Reference and live analysis regions must have equal native dimensions")
-            x, y = live_x, live_y
-        raw = _resize(image[y:y + height, x:x + width], *reference["live_size"])
-        origin = (float(x), float(y))
-        window = reference["window"]
+    x, y, width, height = reference["bounds"]
+    live_region = getattr(config, "live_region", None)
+    if live_region is not None:
+        live_x, live_y, live_width, live_height = live_region.bounds(image.shape)
+        if (live_width, live_height) != (width, height):
+            raise ValueError("Reference and live analysis regions must have equal native dimensions")
+        x, y = live_x, live_y
+    raw = _resize(image[y:y + height, x:x + width], *reference["live_size"])
+    origin = (float(x), float(y))
+    window = reference["window"]
     blurred, centered, prepared, texture = _prepare_plane(raw, config, window)
     result = {"blur_live": blurred, "prepared_live": prepared,
               "live_origin": origin, "texture_live": texture}
@@ -188,8 +162,6 @@ def prepare_inputs(reference: np.ndarray, live: np.ndarray, config: MatchConfig)
 
     Origins are native pixels; scale_x/y are native pixels per analysis sample.
     Phase arrays share a shape; optional independent crops retain their origins.
-    Template arrays are the reference ROI
-    and the complete live search image, so their shapes intentionally differ.
     """
     prepared = _prepare_reference(reference, config)
     return {**prepared, **_prepare_live(live, config, prepared)}
@@ -203,18 +175,17 @@ def _quality(inputs: dict[str, Any], local_shift: tuple[float, float], config: M
     out_w, out_h = max(1, round(width * reduction)), max(1, round(height * reduction))
     ratio_x, ratio_y = width / out_w, height / out_h
     ref_small = cv2.resize(ref, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-    if config.method == "phase" and config.region.kind == "circle":
+    if config.region.kind == "circle":
         support = (inputs["window"] > 0).astype(np.float32)
     else:
         support = np.ones(ref.shape, dtype=np.float32)
     ref_valid = cv2.resize(support, (out_w, out_h), interpolation=cv2.INTER_LINEAR) >= 1 - 1e-6
-    live_support = support if config.method == "phase" else np.ones(live.shape, dtype=np.float32)
 
     def warp(shift: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
         transform = np.float32([[1 / ratio_x, 0, (0.5 - shift[0]) / ratio_x - 0.5],
                                 [0, 1 / ratio_y, (0.5 - shift[1]) / ratio_y - 0.5]])
         image = cv2.warpAffine(live, transform, (out_w, out_h), flags=cv2.INTER_LINEAR)
-        covered = cv2.warpAffine(live_support, transform, (out_w, out_h), flags=cv2.INTER_LINEAR)
+        covered = cv2.warpAffine(support, transform, (out_w, out_h), flags=cv2.INTER_LINEAR)
         return image, covered >= 1 - 1e-6
 
     ref_origin, live_origin = inputs["reference_origin"], inputs["live_origin"]
@@ -286,17 +257,11 @@ class MeasurementEngine:
             # user deliberately lowers the configured threshold to zero.
             if min(inputs["texture_reference"], inputs["texture_live"]) < max(config.min_texture, 1e-3):
                 raise ValueError("Too little texture inside the analysis region")
-            if config.method == "phase":
-                # Explicitly choose an even optimal canvas. OpenCV's centered
-                # peak convention otherwise adds half a sample when an optimal
-                # DFT dimension is odd, including some downsampled ROIs.
-                local, response = cv2.phaseCorrelate(inputs["phase_reference"],
-                                                      _phase_canvas(inputs["prepared_live"]))
-                # local = cv2.phaseCorrelateIterative(inputs["phase_reference"], _phase_canvas(inputs["prepared_live"])); response = 1.0
-            else:
-                surface = cv2.matchTemplate(inputs["blur_live"], inputs["blur_reference"], cv2.TM_CCOEFF_NORMED)
-                _, response, _, position = cv2.minMaxLoc(surface)
-                local = (float(position[0]), float(position[1]))
+            # Explicitly choose an even optimal canvas. OpenCV's centered
+            # peak convention otherwise adds half a sample when an optimal
+            # DFT dimension is odd, including some downsampled ROIs.
+            local, response = cv2.phaseCorrelate(inputs["phase_reference"],
+                                               _phase_canvas(inputs["prepared_live"]))
             matched_at = perf_counter()
             timings["matching_ms"] = (matched_at - prepared_at) * 1000
             dx, dy = global_displacement(local, inputs["reference_origin"], inputs["live_origin"],

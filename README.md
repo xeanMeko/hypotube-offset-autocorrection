@@ -3,8 +3,8 @@
 A Linux desktop application for aligning live images against a fixed reference,
 with optional joystick/keyboard motor nudging and mechanical X alignment. It
 measures X/Y translation in native image pixels using phase
-correlation or template matching, with optional image analytics and experimental
-slot detection. The original notebooks and sample images remain available.
+correlation, with optional image analytics. The notebooks and sample images
+remain available.
 
 ## Install and launch
 
@@ -139,12 +139,11 @@ crosshair** beneath the **View** selector to draw cyan guides through the image
 center in both views. The guides stay anchored while zooming and panning, and the
 toggle is remembered across restarts.
 
-Whole-image matching is the default. A draggable rectangular or circular region
-limits the analysis to a feature. A Hann window or circular taper is applied once
-during preprocessing.
-Template matching is useful for a distinctive region that moves farther through
-the frame. Optional half/quarter-resolution analysis reduces processing work;
-the reported shift and selected regions remain in native image pixels.
+Whole-image phase correlation is the default. A draggable rectangular or
+circular region limits the analysis to a feature. A Hann window or circular
+taper is applied once during preprocessing. Optional half/quarter-resolution
+analysis reduces processing work; the reported shift and selected regions
+remain in native image pixels.
 
 The reference stays fixed while measuring. Changing source geometry clears an
 incompatible reference. Weak texture, uncertain matches, insufficient overlap,
@@ -199,26 +198,12 @@ validity checks remain part of normal measurement even when analytics is Off.
 | Correlation | Reconstructed correlation map, peak detail, and horizontal/vertical peak slices. |
 | Alignment | Before/after comparisons, overlap, and residual differences. |
 | Performance | Acquisition/measurement rates, frame age, and processing/diagnostic timings. |
-| Slot β | Candidate/selected slot regions, tip information, and detection state. |
 
 The Fourier/correlation views reconstruct diagnostics independently of OpenCV's
 reported displacement and are labeled accordingly. Keep Frozen inspection open
 when comparing several tabs: each tab then describes the same captured pair.
 Full-frame arrays can consume substantial memory, so keep live analytics at a
 modest refresh rate while aligning.
-
-## Slot detection beta
-
-**Find slot β** proposes dark elongated features within the circular field,
-using local contrast, shape, width, and interior-tip evidence. Choose a candidate
-when several are plausible. Its proposed measurement region includes the tip
-and adjacent texture. Tracking remains relative to the original reference.
-
-Searching, tracking, ambiguous, and lost states make failures visible. Manual
-rectangle/circle selection remains available. This is experimental detection:
-scratches, multiple similar slots, changing illumination, rotation, occlusion, or
-a changed slot shape can confuse it. It does not provide rotation or scale
-compensation.
 
 ## Save and inspect results
 
@@ -438,8 +423,8 @@ or nonfinite estimates remain blocked at any offset; pixel calibration still
 requires valid matches. If X is already within tolerance
 but a large Y offset permits an uncertain match, the controller waits for valid
 measurements before confirming completion. The match quality details below the
-readout identify which check failed. Select a textured region or a distinctive
-rectangular template and check that both images share the same feature.
+readout identify which check failed. Select a textured rectangle or circle and
+check that both images share the same feature.
 Unrecovered feedback loss, increasing error, ten unsuccessful corrections,
 insufficient step resolution, 100 corrections, or 60 seconds stop the attempt
 with a status message. Manual input cancels calibration/alignment and requires neutral before

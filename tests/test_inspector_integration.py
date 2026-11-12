@@ -1,4 +1,4 @@
-"""Real-worker integration for optional inspection and the beta slot workflow."""
+"""Real-worker integration for optional inspection."""
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -18,7 +18,6 @@ from measure_shift import analytics
 from measure_shift.app import MainWindow
 from measure_shift.engine import MeasurementEngine
 from measure_shift.models import FramePacket, InspectionPair
-from measure_shift.slots import SlotCandidate
 from measure_shift.workers import AnalysisOutput
 
 
@@ -81,7 +80,7 @@ def test_match_warnings_preserve_sidebar_and_image_geometry(window, qapp, width)
         (valid, "+X right · +Y down\nDisplacement is reference → current."),
         (None, "+X right · +Y down\nDisplacement is reference → current."),
     ]
-    watched = (window.tolerance, window.find_slot, window.reference_pane, window.live_pane)
+    watched = (window.tolerance, window.area, window.reference_pane, window.live_pane)
 
     def geometry_after_layout():
         # Layout requests can be posted by a preceding size-hint change.
@@ -180,58 +179,3 @@ def test_frozen_inspection_keeps_same_images_result_and_settings_across_tabs(win
     window.analytics.output.publish(AnalysisOutput(window.analytics.generation, wrong))
     window._poll()
     assert window.last_diagnostic.pair is captured
-
-
-def test_beta_find_choose_track_and_loss_use_fixed_reference(window, qapp):
-    image = np.full((320, 320), 8, np.uint8)
-    cv2.circle(image, (160, 160), 142, 175, -1)
-    cv2.rectangle(image, (150, 70), (166, 200), 20, -1)
-    window.latest_frame = FramePacket.from_array(image)
-    window.capture_reference()
-    original_reference_id = window.reference.reference_id
-    window._find_slots()
-    spin(window, qapp, lambda: bool(window._slot_candidates))
-    assert window.slot_choice.count() == len(window._slot_candidates) == 1
-    window._use_slot()
-    assert window.slot_tracking.isChecked()
-    moved = cv2.warpAffine(image, np.float32([[1, 0, 9], [0, 1, -6]]), image.shape[::-1])
-    window.frames.publish(FramePacket.from_array(moved))
-    spin(window, qapp, lambda: window.last_pair is not None)
-    result = window.last_pair.result
-    assert result.usable, result.reasons
-    assert (result.dx, result.dy) == pytest.approx((9, -6), abs=0.3)
-    assert window.last_pair.config.live_region is not None
-    assert window.reference.reference_id == original_reference_id
-    assert window.measurement.slot_status == "Tracking"
-    window.frames.publish(FramePacket.from_array(np.zeros_like(image)))
-    spin(window, qapp, lambda: window.last_pair is not None and not window.last_pair.result.usable)
-    assert window.measurement.slot_status == "Lost"
-    assert "lost" in window.last_pair.result.reasons[0]
-    assert window.reference.reference_id == original_reference_id
-
-
-def test_beta_tracking_without_selection_returns_to_off(window):
-    window.slot_tracking.setChecked(True)
-    assert not window.slot_tracking.isChecked()
-    assert window.measurement._slot_selection is None
-    assert "select a candidate" in window.notice.text()
-
-
-def test_beta_discards_candidates_from_an_outdated_analysis_region(window, qapp, monkeypatch):
-    install_pair(window)
-    entered, release = threading.Event(), threading.Event()
-
-    def detect(image, region):
-        entered.set()
-        release.wait(timeout=1)
-        return [SlotCandidate(1, (20, 20, 40, 60), (40, 50), 1)]
-
-    monkeypatch.setattr("measure_shift.slots.detect_slots", detect)
-    window._find_slots()
-    assert entered.wait(timeout=1)
-    window.area.setCurrentText("Rectangle")
-    release.set()
-    spin(window, qapp, lambda: not window.tasks)
-    assert window.find_slot.isEnabled()
-    assert not window._slot_candidates
-    assert window.slot_choice.count() == 0

@@ -81,7 +81,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._paused = False
         self._closing = False
         self._close_pending = False
-        self._slot_candidates = []
         self._profile_camera = {}
         self._axis_source_kind = ""
         self._axis_source_id = ""
@@ -158,6 +157,9 @@ class MainWindow(QtWidgets.QMainWindow):
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.reference_pane = ImagePane("REFERENCE · capture or load an image")
         self.live_pane = ImagePane("LIVE · waiting for input")
+        for pane in (self.reference_pane, self.live_pane):
+            pane.plot.hideAxis("bottom")
+            pane.plot.hideAxis("left")
         self.reference_pane.view.sigRangeChangedManually.connect(lambda _: self._link_views(self.reference_pane, self.live_pane))
         self.live_pane.view.sigRangeChangedManually.connect(lambda _: self._link_views(self.live_pane, self.reference_pane))
         split.addWidget(self.reference_pane)
@@ -200,9 +202,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tolerance.setValue(1)
         self.tolerance.setSuffix(" px")
         form.addRow("Tolerance", self.tolerance)
-        self.method = QtWidgets.QComboBox()
-        self.method.addItems(["Phase correlation", "Template matching"])
-        form.addRow("Method", self.method)
+        form.addRow("Method", QtWidgets.QLabel("Phase correlation"))
         self.area = QtWidgets.QComboBox()
         self.area.addItems(["Whole image", "Rectangle", "Circle"])
         form.addRow("Analyze", self.area)
@@ -221,28 +221,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.crosshair_toggle.toggled.connect(self.reference_pane.set_crosshair_visible)
         self.crosshair_toggle.toggled.connect(self.live_pane.set_crosshair_visible)
         self.tolerance.valueChanged.connect(self._update_readout)
-        self.method.currentIndexChanged.connect(self._method_changed)
         self.area.currentIndexChanged.connect(self._area_changed)
         self.scale.currentIndexChanged.connect(self._matching_changed)
         self.view_mode.currentIndexChanged.connect(self._view_changed)
-
-        slot_group = QtWidgets.QGroupBox("Slot detection · beta")
-        slot_group.setToolTip("Experimental: find a dark slot or groove, then track the selected feature to measure its displacement. Does not measure slot width or shape.")
-        slot_layout = QtWidgets.QVBoxLayout(slot_group)
-        self.find_slot = QtWidgets.QPushButton("Find slot in reference")
-        self.slot_choice = QtWidgets.QComboBox()
-        self.slot_choice.setMinimumContentsLength(12)
-        self.use_slot = QtWidgets.QPushButton("Use selected slot")
-        self.slot_tracking = QtWidgets.QCheckBox("Track selected slot")
-        self.slot_status = QtWidgets.QLabel("Off · manual regions available")
-        self.slot_status.setWordWrap(True)
-        for widget in (self.find_slot, self.slot_choice, self.use_slot, self.slot_tracking, self.slot_status):
-            slot_layout.addWidget(widget)
-        side.addWidget(slot_group)
-        self.find_slot.clicked.connect(self._find_slots)
-        self.slot_choice.currentIndexChanged.connect(self._draw_slot_proposals)
-        self.use_slot.clicked.connect(self._use_slot)
-        self.slot_tracking.toggled.connect(self._track_slot_toggled)
 
         camera = QtWidgets.QGroupBox("Camera controls")
         camera_layout = QtWidgets.QFormLayout(camera)
@@ -270,7 +251,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.min_response.setRange(0, 1)
         self.min_response.setSingleStep(.05)
         self.min_response.setValue(.1)
-        self.min_response.setToolTip("Phase response or normalized template score; neither is a probability")
+        self.min_response.setToolTip("Phase correlation response; not a probability")
         advanced_layout.addRow("Min response", self.min_response)
         self.min_response.valueChanged.connect(self._matching_changed)
         side.addWidget(advanced)
@@ -592,15 +573,9 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             self.config = replace(self.config, region=Region(), live_region=None, config_id=new_id())
             self._sync_matching_controls()
-        if self.config.method == "template" and self.config.region.kind != "rectangle":
-            self.config = replace(self.config, region=self._default_region("rectangle"), config_id=new_id())
-            self._sync_matching_controls()
         self.last_pair = None
         self.reference_pane.set_image(frame.pixels, auto=True)
         self.reference_pane.title.setText(f"REFERENCE · {frame.source_name} · {frame.shape[1]} × {frame.shape[0]}")
-        self._disable_slot()
-        self._slot_candidates = []
-        self.slot_choice.clear()
         self.reference_pane.clear_annotations()
         self.live_pane.clear_annotations()
         self.measurement.configure(self.reference, self.config)
@@ -620,9 +595,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reference_pane.set_region(Region())
         self.reference_pane.clear_annotations()
         self.live_pane.clear_annotations()
-        self._disable_slot()
-        self._slot_candidates = []
-        self.slot_choice.clear()
         self.reference_pane.title.setText("REFERENCE · capture or load an image")
         self.notice.setText(reason)
         self._analysis_changed()
@@ -663,11 +635,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return Region(kind, (w - size) // 2, (h - size) // 2, size, size)
         return Region(kind, w // 4, h // 4, max(8, w // 2), max(8, h // 2))
 
-    def _set_config(self, config, disable_slot=True):
+    def _set_config(self, config):
         self._stop_motion()
         self.config = replace(config, live_region=None, config_id=new_id())
-        if disable_slot:
-            self._disable_slot()
         self.last_pair = None
         self.measurement.configure(self.reference, self.config)
         self.reference_pane.set_region(self.config.region)
@@ -678,34 +648,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._schedule_settings_save()
 
     def _sync_matching_controls(self):
-        for widget in (self.method, self.area, self.scale, self.min_response):
+        for widget in (self.area, self.scale, self.min_response):
             widget.blockSignals(True)
-        self.method.setCurrentIndex(0 if self.config.method == "phase" else 1)
         self.area.setCurrentIndex({"full": 0, "rectangle": 1, "circle": 2}[self.config.region.kind])
         self.scale.setCurrentIndex({1: 0, .5: 1, .25: 2}[self.config.scale])
         self.min_response.setValue(self.config.min_response)
-        for widget in (self.method, self.area, self.scale, self.min_response):
+        for widget in (self.area, self.scale, self.min_response):
             widget.blockSignals(False)
-
-    def _method_changed(self):
-        method = "phase" if self.method.currentIndex() == 0 else "template"
-        region = self.config.region
-        if method == "template" and region.kind != "rectangle":
-            region = self._default_region("rectangle")
-            if region.kind != "rectangle":
-                self._error("Connect an input or load a reference before selecting a template region.")
-                self._sync_matching_controls()
-                return
-        config = replace(self.config, method=method, region=region, min_response=.6 if method == "template" else .1)
-        self._set_config(config)
-        self._sync_matching_controls()
 
     def _area_changed(self):
         kind = ("full", "rectangle", "circle")[self.area.currentIndex()]
         region = Region() if kind == "full" else self._default_region(kind)
-        method = "phase" if kind != "rectangle" else self.config.method
-        self._set_config(replace(self.config, region=region, method=method,
-                                 min_response=.1 if method != self.config.method else self.config.min_response))
+        self._set_config(replace(self.config, region=region))
         self._sync_matching_controls()
 
     def _matching_changed(self):
@@ -782,69 +736,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._control_owner = worker
         self._controls_snapshot = worker.controls
         self._profile_camera = {}
-
-    def _disable_slot(self):
-        self.measurement.select_slot(None)
-        self.slot_tracking.blockSignals(True)
-        self.slot_tracking.setChecked(False)
-        self.slot_tracking.blockSignals(False)
-        self.slot_status.setText("Off · manual regions available")
-
-    def _find_slots(self):
-        if self.reference is None:
-            self.capture_reference()
-        if self.reference is None:
-            return
-        from .slots import detect_slots
-        reference, region, config_id = self.reference, self.config.region, self.config.config_id
-        self.find_slot.setEnabled(False)
-        self.slot_status.setText("Searching reference…")
-        def done(candidates):
-            self.find_slot.setEnabled(True)
-            if self.reference is None or self.reference.reference_id != reference.reference_id or self.config.config_id != config_id:
-                return
-            self._slot_candidates = candidates
-            self.slot_choice.blockSignals(True)
-            self.slot_choice.clear()
-            for candidate in candidates:
-                self.slot_choice.addItem(f"Slot {candidate.id} · score {candidate.score:.2f}")
-            self.slot_choice.blockSignals(False)
-            self.slot_status.setText(f"{len(candidates)} candidate(s). Select one to track." if candidates else "No clear slot found. Draw a manual rectangle around the feature.")
-            self._draw_slot_proposals()
-        task = BackgroundTask(lambda: detect_slots(reference.frame.pixels, region), done,
-                              lambda error: (self.find_slot.setEnabled(True), self._error(error)))
-        self.tasks.append(task)
-        task.start()
-
-    def _draw_slot_proposals(self):
-        self.reference_pane.clear_annotations()
-        for index, candidate in enumerate(self._slot_candidates):
-            self.reference_pane.annotate_slot(candidate, index == self.slot_choice.currentIndex())
-
-    def _use_slot(self):
-        index = self.slot_choice.currentIndex()
-        if self.reference is None or not 0 <= index < len(self._slot_candidates):
-            self._disable_slot()
-            self._error("Find a slot in the reference and select a candidate first.")
-            return
-        candidate = self._slot_candidates[index]
-        self._set_config(replace(self.config, method="phase", region=Region("rectangle", *candidate.bounds),
-                                 min_response=.1 if self.config.method != "phase" else self.config.min_response))
-        self._sync_matching_controls()
-        self.measurement.select_slot(candidate)
-        self.slot_tracking.blockSignals(True)
-        self.slot_tracking.setChecked(True)
-        self.slot_tracking.blockSignals(False)
-        self.slot_status.setText("Tracking selected slot against the original reference")
-
-    def _track_slot_toggled(self, enabled):
-        self._stop_motion()
-        if enabled:
-            self._use_slot()
-        else:
-            self._disable_slot()
-            self.live_pane.clear_annotations()
-            self.measurement.configure(self.reference, self.config)
 
     def _analysis_changed(self):
         self.analytics.cancel()
@@ -936,7 +827,7 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = self.view_mode.currentText()
         pair = self.last_pair
         if mode == "Live":
-            frame = pair.frame if self.slot_tracking.isChecked() and pair is not None else self.latest_frame
+            frame = self.latest_frame
             key = (mode, frame.frame_id, self.config.config_id)
             if key != self._last_render:
                 self.live_pane.set_image(frame.pixels)
@@ -952,13 +843,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.live_pane.set_image(self.latest_frame.pixels)
             self.live_pane.title.setText("LIVE · waiting for matching result to build selected view")
         self.reference_pane.set_region(self.config.region)
-        live_region = pair.config.live_region if pair and self.slot_tracking.isChecked() else None
-        self.live_pane.set_region(live_region or self.config.region)
+        self.live_pane.set_region(self.config.region)
         result = pair.result if pair else None
         self.live_pane.show_correction(result.dx if result and result.usable else None, result.dy if result and result.usable else None)
         self.live_pane.clear_annotations()
-        if self.slot_tracking.isChecked() and self.measurement.slot_candidate is not None:
-            self.live_pane.annotate_slot(self.measurement.slot_candidate, True)
 
     def _draw_trend(self):
         if not self.trend_plot.isVisible() or not self.trend_history:
@@ -1070,8 +958,6 @@ class MainWindow(QtWidgets.QMainWindow):
         age_text = f"{age:.0f} ms" if age is not None else "—"
         measurement_fps = 0 if self._paused else self.measurement.rate.value
         self.performance_label.setText(f"Camera FPS {camera_fps:.1f}   Measurement FPS {measurement_fps:.1f}   Measurement age {age_text}   Processing {processing:.1f} ms   Scale {self.config.scale:g}   Analytics {'busy' if self.analytics.busy else self.dock.mode.currentText().lower()}")
-        if self.slot_tracking.isChecked():
-            self.slot_status.setText(self.measurement.slot_status)
         self._update_readout()
         self._poll_motion()
         self.retired_captures = [thread for thread in self.retired_captures if thread.is_alive()]
@@ -1241,7 +1127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         target.view.setRange(xRange=x_range, yRange=y_range, padding=0)
 
     def _about(self):
-        QtWidgets.QMessageBox.information(self, "Measure Shift", "Connect a camera or start Demo. Capture or load a reference.\n\nWhole-image phase correlation is the default. Draw a rectangle or circle to focus on a feature. X/Y are reference-to-current image displacement; the arrow shows the opposite image correction.\n\nOpen Image analytics for optional live or frozen inspection. Scores are diagnostics, not probabilities. Slot detection is experimental.\n\nAcquisition continues while the view is paused. CSV history retains the latest 10,000 measurements.")
+        QtWidgets.QMessageBox.information(self, "Measure Shift", "Connect a camera or start Demo. Capture or load a reference.\n\nWhole-image phase correlation is the default. Draw a rectangle or circle to focus on a feature. X/Y are reference-to-current image displacement; the arrow shows the opposite image correction.\n\nOpen Image analytics for optional live or frozen inspection. Scores are diagnostics, not probabilities.\n\nAcquisition continues while the view is paused. CSV history retains the latest 10,000 measurements.")
 
     def closeEvent(self, event):
         self._save_startup_settings()

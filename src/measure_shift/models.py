@@ -68,8 +68,8 @@ class MatchConfig:
         if value.get("live_region") is not None:
             kwargs["live_region"] = region_from_dict(value["live_region"])
         result = cls(**kwargs)
-        if result.method not in {"phase", "template"}:
-            raise ValueError("Unknown matching method")
+        if result.method != "phase":
+            raise ValueError("Only phase correlation is supported")
         if result.scale not in (1.0, 0.5, 0.25):
             raise ValueError("Analysis scale must be 1, 1/2, or 1/4")
         if not 0 <= result.min_response <= 1 or not 0 < result.min_overlap <= 1:

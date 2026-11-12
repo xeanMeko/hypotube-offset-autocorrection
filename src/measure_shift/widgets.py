@@ -194,17 +194,6 @@ class ImagePane(QtWidgets.QWidget):
             self.plot.removeItem(item)
         self.annotations.clear()
 
-    def annotate_slot(self, candidate, selected=False) -> None:
-        x, y, w, h = candidate.bounds
-        color = "#69dfb7" if selected else "#ffcd66"
-        rectangle = pg.PlotDataItem([x, x+w, x+w, x, x], [y, y, y+h, y+h, y], pen=pg.mkPen(color, width=2))
-        tip = pg.ScatterPlotItem([candidate.tip[0]], [candidate.tip[1]], symbol="+", size=17, pen=pg.mkPen(color, width=2))
-        label = pg.TextItem(f"Slot {candidate.id}", color=color, anchor=(0, 1))
-        label.setPos(x, y)
-        for item in (rectangle, tip, label):
-            self.plot.addItem(item)
-            self.annotations.append(item)
-
 
 class AnalysisPage(QtWidgets.QWidget):
     def __init__(self, tab: str):
@@ -429,7 +418,7 @@ class AnalyticsDock(QtWidgets.QDockWidget):
         layout.addLayout(controls)
         self.tabs = QtWidgets.QTabWidget()
         self.pages = {}
-        for tab in ("Image", "Preprocessing", "Fourier", "Correlation", "Alignment", "Performance", "Slot β"):
+        for tab in ("Image", "Preprocessing", "Fourier", "Correlation", "Alignment", "Performance"):
             page = AnalysisPage(tab)
             self.pages[tab] = page
             self.tabs.addTab(page, tab)

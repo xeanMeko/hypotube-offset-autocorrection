@@ -67,7 +67,7 @@ def wait_current_config(window, application):
                window.last_pair.key[2] == window.config.config_id)
 
 
-def test_demo_reference_roi_method_and_resolution_workflow(window, qt_application):
+def test_demo_reference_roi_and_resolution_workflow(window, qt_application):
     start_demo(window, qt_application)
     assert window.live_pane.array.shape == (480, 640)
     assert window.analytics.jobs_completed == 0
@@ -79,9 +79,9 @@ def test_demo_reference_roi_method_and_resolution_workflow(window, qt_applicatio
     wait_current_config(window, qt_application)
     assert window.config.region.kind == "circle"
     assert window.reference_pane._region == window.config.region
-    window.method.setCurrentText("Template matching")
+    window.area.setCurrentText("Rectangle")
     wait_current_config(window, qt_application)
-    assert window.config.method == "template"
+    assert window.config.method == "phase"
     assert window.config.region.kind == "rectangle"
     window.scale.setCurrentIndex(2)
     wait_current_config(window, qt_application)
@@ -224,20 +224,6 @@ def test_frozen_inspector_rejects_wrong_frame_even_with_same_reference_and_confi
     window.analytics.output.publish(AnalysisOutput(window.analytics.generation, snapshot=compatible_snapshot))
     window._poll()
     assert window.last_diagnostic is compatible_snapshot
-
-
-def test_demo_slot_tracking_uses_actual_live_roi_without_changing_base_config(window, qt_application):
-    start_demo(window, qt_application)
-    window._find_slots()
-    pump_until(qt_application, lambda: bool(window._slot_candidates))
-    window._use_slot()
-    pump_until(qt_application, lambda: window.last_pair is not None and
-               window.last_pair.config.live_region is not None)
-    assert window.slot_tracking.isChecked()
-    assert window.config.live_region is None
-    assert window.last_pair.config.config_id == window.config.config_id
-    assert window.last_pair.result.usable, window.last_pair.result.reasons
-    assert window.live_pane._region == window.last_pair.config.live_region
 
 
 def test_close_waits_for_export_and_delivers_completion_callback(window, qt_application):

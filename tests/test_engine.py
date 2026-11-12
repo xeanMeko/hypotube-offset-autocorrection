@@ -137,16 +137,6 @@ def test_circle_excludes_outside_pixels_and_applies_only_circle_window():
     assert (result.dx, result.dy) == pytest.approx((-5, 7), abs=0.3)
 
 
-@pytest.mark.parametrize("scale", [1.0, 0.5])
-def test_template_roi_search_converts_origin_and_scale(scale):
-    image = texture((263, 357))
-    config = MatchConfig(method="template", region=Region("rectangle", 71, 55, 81, 73), scale=scale)
-    _, result = measure(image, translate(image, 14, -10), config)
-    assert result.usable, result.reasons
-    assert (result.dx, result.dy) == pytest.approx((14, -10), abs=1.3)
-    assert result.response > 0.8
-
-
 def test_textureless_and_geometry_changes_are_invalid():
     _, result = measure(np.full((64, 64), 100, np.uint8), np.full((64, 64), 100, np.uint8))
     assert result.validity == "invalid"
@@ -201,9 +191,14 @@ def test_normal_measurement_does_not_retain_walkthrough_intermediates():
     assert "centered_reference" not in engine._cache
 
 
-def test_invalid_config_and_template_nonrectangle_return_invalid():
+@pytest.mark.parametrize("config,reason", [
+    (MatchConfig(method="unknown"), "Only phase correlation is supported"),
+    (MatchConfig(blur_size=4), "Blur size must be an odd integer"),
+    (MatchConfig(method="template", region=Region("rectangle", 40, 35, 65, 61)),
+     "Only phase correlation is supported"),
+])
+def test_invalid_config_and_unsupported_method_return_invalid(config, reason):
     image = texture()
-    for config in [MatchConfig(method="unknown"), MatchConfig(blur_size=4), MatchConfig(method="template")]:
-        _, result = measure(image, image, config)
-        assert result.validity == "invalid"
-        assert result.reasons
+    _, result = measure(image, image, config)
+    assert result.validity == "invalid"
+    assert reason in result.reasons[0]

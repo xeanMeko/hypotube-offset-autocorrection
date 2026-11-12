@@ -95,7 +95,6 @@ def test_histogram_counts_and_correlation_curves_keep_signed_native_axes(show_wi
     np.testing.assert_array_equal(xs, snapshot.metrics["slice_x_native_px"])
     np.testing.assert_array_equal(ys, snapshot.arrays["correlation_horizontal"])
     assert xs.min() < 0 < xs.max()
-    assert "Measured displacement" in page.metrics.text()
     assert "Reconstructed" in page.metrics.text()
     for key, rect_key in (("reconstructed_correlation", "correlation_rect_native_px"), ("peak_zoom", "peak_zoom_rect_native_px")):
         pane = page.views[key]

@@ -16,7 +16,7 @@ from .engine import phase_dft_shape, prepare_inputs
 from .models import DiagnosticSnapshot, InspectionPair
 
 
-TABS = ("Image", "Preprocessing", "Fourier", "Correlation", "Alignment", "Performance", "Slot β")
+TABS = ("Image", "Preprocessing", "Fourier", "Correlation", "Alignment", "Performance")
 
 
 def _red_cyan(reference: np.ndarray, current: np.ndarray) -> np.ndarray:
@@ -82,23 +82,20 @@ def analyze_pair(pair: InspectionPair, tab: str) -> DiagnosticSnapshot:
         if tab == "Preprocessing":
             for name in ("reference", "live", "blur_reference", "blur_live", "centered_reference", "centered_live", "window", "prepared_reference", "prepared_live"):
                 arrays[name] = inputs[name].copy()
-            metrics["window"] = "Applied once to centered inputs" if pair.config.method == "phase" else "Template matching: no taper"
+            metrics["window"] = "Applied once to centered inputs"
         elif tab == "Fourier":
             for name in ("reference", "live"):
                 plane = inputs[f"prepared_{name}"]
-                fft_shape = phase_dft_shape(plane.shape) if pair.config.method == "phase" else plane.shape
+                fft_shape = phase_dft_shape(plane.shape)
                 spectrum = np.fft.fftshift(np.fft.fft2(plane, s=fft_shape))
                 arrays[f"log_magnitude_{name}"] = np.log1p(np.abs(spectrum)).astype(np.float32)
                 arrays[f"phase_{name}"] = np.angle(spectrum).astype(np.float32)
-            if inputs["prepared_reference"].shape == inputs["prepared_live"].shape:
-                fft_shape = phase_dft_shape(inputs["prepared_reference"].shape) if pair.config.method == "phase" else inputs["prepared_reference"].shape
-                cross = np.fft.fft2(inputs["prepared_live"], s=fft_shape) * np.conj(np.fft.fft2(inputs["prepared_reference"], s=fft_shape))
-                arrays["normalized_cross_phase"] = np.fft.fftshift(np.angle(cross)).astype(np.float32)
-                metrics["phase_units"] = "radians"
-            else:
-                metrics["cross_phase"] = "Unavailable for unequal template and search-image shapes"
+            fft_shape = phase_dft_shape(inputs["prepared_reference"].shape)
+            cross = np.fft.fft2(inputs["prepared_live"], s=fft_shape) * np.conj(np.fft.fft2(inputs["prepared_reference"], s=fft_shape))
+            arrays["normalized_cross_phase"] = np.fft.fftshift(np.angle(cross)).astype(np.float32)
+            metrics["phase_units"] = "radians"
         elif tab == "Correlation":
-            _correlation(inputs, pair, arrays, metrics)
+            _correlation(inputs, arrays, metrics)
     elif tab == "Alignment":
         if reference.shape != current.shape:
             metrics["alignment"] = "Images have different geometry; capture a new reference"
@@ -123,68 +120,27 @@ def analyze_pair(pair: InspectionPair, tab: str) -> DiagnosticSnapshot:
         metrics["camera_source"] = pair.frame.source_name
         metrics["native_width"] = current.shape[1]
         metrics["native_height"] = current.shape[0]
-    elif tab == "Slot β":
-        from .slots import detect_slots
-
-        candidates = detect_slots(current)
-        overlay = cv2.cvtColor(current, cv2.COLOR_GRAY2RGB)
-        for candidate in candidates:
-            x, y, width, height = candidate.bounds
-            cv2.rectangle(overlay, (x, y), (x + width - 1, y + height - 1), (255, 190, 0), 2)
-            tip = tuple(int(round(v)) for v in candidate.tip)
-            cv2.circle(overlay, tip, 4, (255, 40, 80), -1)
-            cv2.putText(overlay, f"Candidate {candidate.id}", (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 190, 0), 1)
-        runtime = pair.runtime_metrics
-        status = runtime.get("slot_status", "Off")
-        metrics.update(
-            slot_status=status,
-            slot_id=runtime.get("slot_id"),
-            reference_tip_px=runtime.get("reference_tip_px"),
-            live_tip_px=runtime.get("live_tip_px"),
-            selected_reference_region_px=list(pair.config.region.bounds(reference.shape)),
-            selected_live_region_px=list(pair.config.live_region.bounds(current.shape)) if pair.config.live_region is not None else None,
-            proposal_identity="New candidates are proposals; the captured selected slot identity is unchanged",
-        )
-        if status == "Tracking" and pair.config.live_region is not None:
-            x, y, width, height = pair.config.live_region.bounds(current.shape)
-            selected_color = (70, 220, 140)
-            cv2.rectangle(overlay, (x, y), (x + width - 1, y + height - 1), selected_color, 2)
-            cv2.putText(overlay, f"Selected slot {runtime.get('slot_id', '?')}", (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, selected_color, 1)
-            live_tip = runtime.get("live_tip_px")
-            if live_tip is not None and len(live_tip) == 2 and np.isfinite(live_tip).all():
-                tip = tuple(int(round(value)) for value in live_tip)
-                cv2.drawMarker(overlay, tip, selected_color, cv2.MARKER_CROSS, 13, 2)
-        arrays["slot_candidates_beta"] = overlay
-        metrics["candidate_count"] = len(candidates)
-        metrics["candidate_scores"] = [round(candidate.score, 4) for candidate in candidates]
-        metrics["detector"] = "Experimental; select an identity to track in the main view"
     metrics["analytics_ms"] = (time.perf_counter() - started) * 1000
     for value in arrays.values():
         value.setflags(write=False)
     return DiagnosticSnapshot(pair, tab, arrays, metrics)
 
 
-def _correlation(inputs: dict, pair: InspectionPair, arrays: dict, metrics: dict) -> None:
+def _correlation(inputs: dict, arrays: dict, metrics: dict) -> None:
     reference = inputs["prepared_reference"]
     current = inputs["prepared_live"]
     sx, sy = inputs["scale_x"], inputs["scale_y"]
     rx, ry = inputs["reference_origin"]
     lx, ly = inputs["live_origin"]
-    if pair.config.method == "template":
-        correlation = cv2.matchTemplate(inputs["blur_live"], inputs["blur_reference"], cv2.TM_CCOEFF_NORMED)
-        axes_x = np.arange(correlation.shape[1]) * sx + lx - rx
-        axes_y = np.arange(correlation.shape[0]) * sy + ly - ry
-        metrics["map_label"] = "Reconstructed normalized template correlation; measured result shown separately"
-    else:
-        fft_shape = phase_dft_shape(reference.shape)
-        cross = np.fft.fft2(current, s=fft_shape) * np.conj(np.fft.fft2(reference, s=fft_shape))
-        magnitude = np.abs(cross)
-        normalized = np.divide(cross, magnitude, out=np.zeros_like(cross), where=magnitude > np.finfo(float).eps)
-        correlation = np.fft.fftshift(np.fft.ifft2(normalized).real).astype(np.float32)
-        height, width = correlation.shape
-        axes_x = (np.arange(width) - width // 2) * sx + lx - rx
-        axes_y = (np.arange(height) - height // 2) * sy + ly - ry
-        metrics["map_label"] = "Reconstructed signed phase-correlation map; independent from OpenCV subpixel estimator"
+    fft_shape = phase_dft_shape(reference.shape)
+    cross = np.fft.fft2(current, s=fft_shape) * np.conj(np.fft.fft2(reference, s=fft_shape))
+    magnitude = np.abs(cross)
+    normalized = np.divide(cross, magnitude, out=np.zeros_like(cross), where=magnitude > np.finfo(float).eps)
+    correlation = np.fft.fftshift(np.fft.ifft2(normalized).real).astype(np.float32)
+    height, width = correlation.shape
+    axes_x = (np.arange(width) - width // 2) * sx + lx - rx
+    axes_y = (np.arange(height) - height // 2) * sy + ly - ry
+    metrics["map_label"] = "Reconstructed signed phase-correlation map; independent from OpenCV subpixel estimator"
     iy, ix = np.unravel_index(np.argmax(correlation), correlation.shape)
     radius = 12
     left, top = max(0, ix - radius), max(0, iy - radius)

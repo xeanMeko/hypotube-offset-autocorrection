@@ -39,7 +39,7 @@ def test_every_tab_preserves_images_cache_and_measurement():
     np.testing.assert_array_equal(pair.frame.pixels, before[1])
 
 
-@pytest.mark.parametrize("tab", ["Image", "Alignment", "Performance", "Slot β"])
+@pytest.mark.parametrize("tab", ["Image", "Alignment", "Performance"])
 def test_non_transform_tabs_do_not_prepare_or_fft(monkeypatch, tab):
     _, pair = pair_for_shift()
 
@@ -91,17 +91,6 @@ def test_independently_recentered_live_crop_preserves_original_displacement():
     zoom = diagnostic.metrics["peak_zoom_rect_native_px"]
     assert zoom[0] + 1 == diagnostic.metrics["peak_zoom_x_native_px"][0]
     assert zoom[1] + 1 == diagnostic.metrics["peak_zoom_y_native_px"][0]
-
-
-def test_template_correlation_has_native_crop_offset():
-    config = MatchConfig(method="template", region=Region("rectangle", 40, 35, 65, 61))
-    _, pair = pair_for_shift(-9, 7, config)
-    diagnostic = analyze_pair(pair, "Correlation")
-    assert diagnostic.metrics["reconstructed_integer_peak_dx_px"] == -9
-    assert diagnostic.metrics["reconstructed_integer_peak_dy_px"] == 7
-    fourier = analyze_pair(pair, "Fourier")
-    assert "normalized_cross_phase" not in fourier.arrays
-    assert "Unavailable" in fourier.metrics["cross_phase"]
 
 
 def test_compensation_uses_negative_shift_and_full_interpolation_support():
@@ -157,41 +146,3 @@ def test_performance_uses_captured_rates_and_keeps_a_detached_metric_mapping():
     assert performance.metrics["camera_fps"] == 45.0
     performance.metrics["camera_fps"] = 99
     assert pair.runtime_metrics["camera_fps"] == 45.0
-
-
-def test_slot_tab_uses_captured_identity_status_tips_and_tracked_native_region(monkeypatch):
-    from measure_shift.slots import SlotCandidate
-
-    config = MatchConfig(
-        region=Region("rectangle", 40, 35, 65, 61),
-        live_region=Region("rectangle", 48, 29, 65, 61),
-    )
-    _, pair = pair_for_shift(8, -6, config)
-    pair = replace(pair, runtime_metrics={
-        "slot_status": "Tracking", "slot_id": 7,
-        "reference_tip_px": (70.0, 75.0), "live_tip_px": (78.0, 69.0),
-    })
-    # Newly detected candidates have their own proposal identifiers and cannot
-    # replace the operator's original selected identity in a frozen inspection.
-    monkeypatch.setattr("measure_shift.slots.detect_slots", lambda image: [SlotCandidate(99, (5, 5, 12, 12), (10, 10), 1.0)])
-    snapshot = analyze_pair(pair, "Slot β")
-    assert snapshot.metrics["slot_status"] == "Tracking"
-    assert snapshot.metrics["slot_id"] == 7
-    assert snapshot.metrics["reference_tip_px"] == (70.0, 75.0)
-    assert snapshot.metrics["live_tip_px"] == (78.0, 69.0)
-    assert snapshot.metrics["selected_reference_region_px"] == [40, 35, 65, 61]
-    assert snapshot.metrics["selected_live_region_px"] == [48, 29, 65, 61]
-    assert snapshot.metrics["candidate_count"] == 1
-    overlay = snapshot.arrays["slot_candidates_beta"]
-    np.testing.assert_array_equal(overlay[29, 48], [70, 220, 140])
-    np.testing.assert_array_equal(overlay[69, 78], [70, 220, 140])
-    np.testing.assert_array_equal(overlay[5, 5], [255, 190, 0])
-    lost = replace(pair, config=replace(config, live_region=None), runtime_metrics={
-        "slot_status": "Lost", "slot_id": 7, "reference_tip_px": (70.0, 75.0), "live_tip_px": None,
-    })
-    lost_snapshot = analyze_pair(lost, "Slot β")
-    assert lost_snapshot.metrics["slot_status"] == "Lost"
-    assert lost_snapshot.metrics["slot_id"] == 7
-    assert lost_snapshot.metrics["live_tip_px"] is None
-    assert lost_snapshot.metrics["selected_live_region_px"] is None
-    assert not np.any(np.all(lost_snapshot.arrays["slot_candidates_beta"] == [70, 220, 140], axis=-1))

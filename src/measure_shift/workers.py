@@ -208,9 +208,6 @@ class MeasurementWorker(threading.Thread):
         self._lock = threading.Lock()
         self._reference: ReferenceSnapshot | None = None
         self._config = MatchConfig()
-        self._slot_selection = None
-        self.slot_candidate = None
-        self.slot_status = "Off"
         self.calibration_output = LatestValue()
         self._calibration_request: tuple[float, int] | None = None
 
@@ -233,23 +230,11 @@ class MeasurementWorker(threading.Thread):
         with self._lock:
             return self._reference.reference_id if self._reference else None, self._config.config_id
 
-    def select_slot(self, candidate) -> None:
-        with self._lock:
-            self._slot_selection = candidate
-        if candidate is None:
-            self.slot_candidate = None
-            self.slot_status = "Off"
-
     def run(self) -> None:
         from .engine import MeasurementEngine
         from .live_calibration import CalibrationObservation, LiveCalibration
-        from .models import MatchResult, Region
-        from .slots import SlotTracker
-        from dataclasses import replace
 
         engine = MeasurementEngine()
-        tracker = SlotTracker()
-        selection_key = None
         revision = -1
         previous_key = None
         calibration = None
@@ -260,14 +245,13 @@ class MeasurementWorker(threading.Thread):
                 continue
             with self._lock:
                 reference, config = self._reference, self._config
-                selection = self._slot_selection
                 request = self._calibration_request
             if request != calibration_request:
                 calibration = None
                 calibration_request = request
             # Calibration must also run when no saved reference exists. Its
-            # own engine keeps target matching regions and slot tracking out
-            # of the motor response measurement.
+            # own engine keeps target matching regions out of the motor
+            # response measurement.
             if request is not None:
                 after, generation = request
                 if (frame.freshness_generation >= generation and frame.read_started_at is not None
@@ -284,44 +268,17 @@ class MeasurementWorker(threading.Thread):
                         self.error = str(exc)
             if reference is None:
                 continue
-            slot_key = (reference.reference_id, id(selection)) if selection is not None else None
-            key = (frame.frame_id, reference.reference_id, config.config_id, slot_key)
+            key = (frame.frame_id, reference.reference_id, config.config_id)
             if key == previous_key:
                 continue
             previous_key = key
             try:
                 if engine.reference is None or engine.reference.reference_id != reference.reference_id:
                     engine.set_reference(reference)
-                actual_config = config
-                if selection is not None:
-                    if slot_key != selection_key:
-                        tracker.select(selection, reference.frame.pixels)
-                        selection_key = slot_key
-                    candidate = tracker.update(frame.pixels)
-                    self.slot_status = tracker.status
-                    self.slot_candidate = candidate
-                    if candidate is not None:
-                        actual_config = replace(config, live_region=Region("rectangle", *candidate.bounds))
-                        result = engine.measure(frame, actual_config)
-                    else:
-                        result = MatchResult(frame.frame_id, reference.reference_id, config.config_id,
-                                             reasons=(f"Slot {tracker.status.lower()}; select the feature again or use a manual region",))
-                else:
-                    if selection_key is not None:
-                        tracker.clear()
-                        selection_key = None
-                    self.slot_status = "Off"
-                    self.slot_candidate = None
-                    result = engine.measure(frame, config)
+                result = engine.measure(frame, config)
                 # A slow old job must never replace results for a changed reference/ROI.
-                with self._lock:
-                    selection_current = self._slot_selection is selection
-                if self.current_key() == (reference.reference_id, config.config_id) and selection_current:
-                    runtime = {"slot_status": self.slot_status}
-                    if selection is not None:
-                        runtime.update(slot_id=selection.id, reference_tip_px=selection.tip,
-                                       live_tip_px=self.slot_candidate.tip if self.slot_candidate else None)
-                    self.output.publish(InspectionPair(reference, frame, actual_config, result, runtime))
+                if self.current_key() == (reference.reference_id, config.config_id):
+                    self.output.publish(InspectionPair(reference, frame, config, result))
                     self.rate.tick()
                     self.error = None
             except Exception as exc:
