@@ -72,6 +72,39 @@ known moving translation. Files and video replay in a loop. Image directories
 play supported images in filename order; all frames used with one reference must
 have the same dimensions.
 
+## Build a Linux executable
+
+Build on Linux with Python 3.11 or newer. On Ubuntu 24.04, install the build
+tools and common Qt display libraries first:
+
+```bash
+sudo apt install python3-venv binutils libgl1 libegl1 libxcb-cursor0 libxkbcommon-x11-0
+bash scripts/build_linux.sh
+./dist/measure-shift/measure-shift --demo
+```
+
+The script creates a separate system-Python environment in `build/linux-venv`,
+installs the app with camera and motion bindings plus PyInstaller, and bundles
+the dynamically imported hardware modules. Set `MEASURE_SHIFT_BUILD_PYTHON` to
+another Python executable if needed. The build does not use the existing
+development `.venv`.
+
+After the first build, use `bash scripts/build_linux.sh --skip-install` to
+rebuild the current source without accessing the package index, provided the
+dependencies have not changed.
+
+Copy the entire `dist/measure-shift/` directory, or extract the generated
+`dist/measure-shift-linux-<architecture>.tar.gz` archive on the target computer.
+The bundle includes Python and the app's Python dependencies; camera drivers
+and manufacturer runtimes still need to be installed on the target computer.
+The resolved build dependencies are recorded in the bundle's
+`build-requirements.txt`.
+
+Build on the oldest Ubuntu release you intend to support and use the target
+CPU architecture. PyInstaller bundles still depend on the operating system's
+glibc and desktop libraries. See
+[PyInstaller's Linux compatibility notes](https://pyinstaller.org/en/stable/usage.html#making-gnu-linux-apps-forward-compatible).
+
 ## Align a sample
 
 1. Choose Demo, Images, Video, Basler, or IDS. Select a file/directory for replay,
