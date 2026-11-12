@@ -1,8 +1,19 @@
 """Measure motor response between live frames, independently of the target."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .engine import MeasurementEngine
 from .models import FramePacket, MatchConfig, MatchResult
+
+
+@dataclass(frozen=True)
+class CalibrationObservation:
+    """A live-baseline result tied to the request that selected its baseline."""
+
+    request: tuple[float, int]
+    frame: FramePacket
+    result: MatchResult
 
 
 class LiveCalibration:

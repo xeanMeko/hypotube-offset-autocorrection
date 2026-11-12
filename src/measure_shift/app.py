@@ -90,7 +90,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._motion_status = None
         self._reference_capture_request = None
         self._last_digital_reference_at = None
-        self.motion = MotionWorker(hardware=motion_hardware, freshness_callback=self._request_motion_frames)
+        self.motion = MotionWorker(hardware=motion_hardware, freshness_callback=self._request_motion_frames,
+                                   calibration_worker=self.measurement)
         self._build_ui()
         self.axis_keyboard = AxisKeyboardFilter(self)
         self.axis_keyboard.changed.connect(self.motion.set_keyboard)

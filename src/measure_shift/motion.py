@@ -14,7 +14,7 @@ import time
 from typing import Callable
 
 from .motion_hardware import HardwareState, TinkerforgeMotionHardware
-from .workers import LatestValue
+from .workers import LatestValue, MeasurementWorker
 
 
 REFERENCE_CAPTURE_INTERVAL_S = 1.0
@@ -161,15 +161,19 @@ class MotionContext:
                 self.config_id, self.connected, self.paused, self.tolerance_px)
 
     @property
-    def camera_ready(self) -> bool:
+    def live_camera_ready(self) -> bool:
         return (self.connected and not self.paused and self.source_kind.lower() in {"ids", "basler"}
-                and self.shape is not None and self.reference_id is not None and self.config_id is not None)
+                and self.shape is not None and self.config_id is not None)
+
+    @property
+    def camera_ready(self) -> bool:
+        return self.live_camera_ready and self.reference_id is not None
 
 
 @dataclass(frozen=True)
 class MotionFeedback:
     frame_id: str
-    reference_id: str
+    reference_id: str | None
     config_id: str
     dx: float
     usable: bool
@@ -344,7 +348,7 @@ class MotionController:
         if (activity or any(after)) and self._operation:
             self._manual_activity = True
 
-    def submit_feedback(self, feedback: MotionFeedback) -> None:
+    def submit_feedback(self, feedback: MotionFeedback | None) -> None:
         self._feedback = feedback
 
     def on_connected(self, state: HardwareState) -> None:
@@ -476,7 +480,10 @@ class MotionController:
         if any(self._logical_inputs(raw=True)):
             self.message = "Release joystick and arrow keys before using camera feedback"
             return
-        if not self.context.camera_ready:
+        if not self.context.live_camera_ready:
+            self.message = "A running, unpaused IDS or Basler camera is required"
+            return
+        if kind == "align" and not self.context.camera_ready:
             self.message = "A running, unpaused IDS or Basler camera and a reference are required"
             return
         if kind == "align" and self.config.pixels_per_step is None:
@@ -488,6 +495,7 @@ class MotionController:
         self._calibration_steps = steps
         self._corrections = self._confirmations = self._no_progress = 0
         self._previous_error = None
+        self._feedback = None
         self._neutral_required = True
         self.phase = "aligning" if kind == "align" else "calibrating"
         self.message = "Waiting for a fresh, settled camera measurement"
@@ -754,11 +762,14 @@ class MotionWorker(threading.Thread):
     """Serialize hardware requests; UI methods only replace data or enqueue commands."""
 
     def __init__(self, config: MotionConfig | None = None, hardware=None,
-                 freshness_callback: Callable[[float], int] | None = None):
+                 freshness_callback: Callable[[float], int] | None = None,
+                 calibration_worker: MeasurementWorker | None = None):
         super().__init__(name="single-axis-motion", daemon=True)
         self.controller = MotionController(config)
         self.hardware = hardware if hardware is not None else TinkerforgeMotionHardware()
         self.freshness_callback = freshness_callback
+        self.calibration_worker = calibration_worker
+        self._calibration_request: tuple[float, int] | None = None
         self.output = LatestValue()
         self.stopping = threading.Event()
         self._stop_requested = threading.Event()
@@ -810,6 +821,25 @@ class MotionWorker(threading.Thread):
         with self._lock:
             self._feedback = feedback
 
+    def _sync_feedback(self, feedback):
+        controller = self.controller
+        if self.calibration_worker is not None and controller._operation == "calibration":
+            observation, _ = self.calibration_worker.calibration_output.read()
+            if observation is not None and observation.request == self._calibration_request:
+                frame, result = observation.frame, observation.result
+                # Keep context invalidation and acquisition provenance while
+                # using displacement measured against the pre-move live image.
+                feedback = MotionFeedback(
+                    frame.frame_id, controller.context.reference_id, controller.context.config_id,
+                    result.dx, result.usable, frame.received_at, frame.read_started_at,
+                    frame.freshness_generation, dy=result.dy, validity=result.validity)
+            else:
+                feedback = None
+        elif self._calibration_request is not None:
+            self.calibration_worker.stop_calibration()
+            self._calibration_request = None
+        controller.submit_feedback(feedback)
+
     def connect_hardware(self): self._enqueue("connect")
     def disconnect_hardware(self): self._enqueue("disconnect")
     def apply_setup(self): self._enqueue("setup")
@@ -848,7 +878,12 @@ class MotionWorker(threading.Thread):
             if self.freshness_callback is None:
                 self.controller.cancel("A live camera freshness barrier is required")
             else:
-                self.controller.acknowledge_freshness(self.freshness_callback(action.after))
+                generation = self.freshness_callback(action.after)
+                self.controller.acknowledge_freshness(generation)
+                if (self.calibration_worker is not None and self.controller._operation == "calibration"
+                        and self.controller._stage == "baseline" and generation > 0):
+                    self._calibration_request = action.after, generation
+                    self.calibration_worker.start_calibration(action.after, generation)
 
     def _command(self, name, value):
         controller = self.controller
@@ -918,10 +953,9 @@ class MotionWorker(threading.Thread):
                 try:
                     self.controller.set_context(context)
                     self._sync_keyboard()
-                    if feedback is not None:
-                        self.controller.submit_feedback(feedback)
                     for name, value in commands:
                         self._command(name, value)
+                    self._sync_feedback(feedback)
                     if self.controller.connected:
                         state = self.hardware.read_state()
                         inputs = self.hardware.read_inputs()
@@ -931,8 +965,7 @@ class MotionWorker(threading.Thread):
                         with self._lock:
                             context, feedback = self._context, self._feedback
                         self.controller.set_context(context)
-                        if feedback is not None:
-                            self.controller.submit_feedback(feedback)
+                        self._sync_feedback(feedback)
                         self._sync_keyboard()
                         if self._stop_requested.is_set():
                             self.controller.cancel("Motion stopped; release both directions before the next press", disarm=False)
@@ -951,6 +984,8 @@ class MotionWorker(threading.Thread):
                 self.output.publish(self.controller.snapshot())
                 self.stopping.wait(.02)
         finally:
+            if self._calibration_request is not None:
+                self.calibration_worker.stop_calibration()
             try:
                 self.hardware.shutdown()
                 self.controller.on_disconnected()

@@ -1,5 +1,5 @@
 """Deterministic background scheduling tests without importing Qt."""
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import gc
 import threading
 import time
@@ -100,6 +100,84 @@ def test_measurement_rejects_old_inflight_reference_or_configuration(monkeypatch
     finally:
         release_first.set()
         release_second.set()
+        stop(worker)
+
+
+def test_live_calibration_uses_fresh_camera_frames_without_a_saved_reference():
+    frames = LatestValue()
+    worker = MeasurementWorker(frames)
+    image = np.random.default_rng(12).integers(15, 240, (128, 160), dtype=np.uint8)
+
+    def frame(pixels, *, started=10.01, received=10.02, generation=3):
+        return replace(FramePacket.from_array(pixels), read_started_at=started,
+                       received_at=received, freshness_generation=generation)
+
+    worker.start_calibration(10, 3)
+    worker.start()
+    try:
+        for stale in (frame(image, generation=2), frame(image, started=9),
+                      frame(image, started=None), frame(image, received=9)):
+            frames.publish(stale)
+            assert worker.calibration_output.wait(worker.calibration_output.read()[1], .06)[0] is None
+
+        baseline = frame(image)
+        frames.publish(baseline)
+        wait_for(lambda: worker.calibration_output.read()[0] is not None)
+        before = worker.calibration_output.read()[0]
+        assert before.frame is baseline
+        assert before.result.usable
+        assert before.result.dx == pytest.approx(0, abs=.1)
+
+        after = frame(np.roll(image, -6, axis=1), started=11, received=11.01, generation=4)
+        frames.publish(after)
+        wait_for(lambda: worker.calibration_output.read()[0].frame is after)
+        observation = worker.calibration_output.read()[0]
+        assert observation.request == (10, 3)
+        assert observation.result.usable
+        assert observation.result.dx == pytest.approx(-6, abs=.3)
+        assert worker.output.read()[0] is None
+
+        worker.stop_calibration()
+        assert worker.calibration_output.read()[0] is None
+        worker.start_calibration(20, 5)
+        baseline = frame(after.pixels, started=20.01, received=20.02, generation=5)
+        frames.publish(baseline)
+        wait_for(lambda: worker.calibration_output.read()[0] is not None)
+        restarted = worker.calibration_output.read()[0]
+        assert restarted.request == (20, 5)
+        assert restarted.result.reference_id != before.result.reference_id
+        assert restarted.result.dx == pytest.approx(0, abs=.1)
+    finally:
+        stop(worker)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_live_calibration_discards_inflight_results_after_cancellation(monkeypatch, restart):
+    from measure_shift.live_calibration import LiveCalibration
+    started, release = threading.Event(), threading.Event()
+    measure = LiveCalibration.measure
+
+    def slow_measure(self, frame):
+        started.set()
+        assert release.wait(2)
+        return measure(self, frame)
+
+    monkeypatch.setattr(LiveCalibration, "measure", slow_measure)
+    frames = LatestValue()
+    worker = MeasurementWorker(frames)
+    worker.start_calibration(10, 1)
+    worker.start()
+    try:
+        frames.publish(replace(make_pair().frame, read_started_at=10.01,
+                               received_at=10.02, freshness_generation=1))
+        assert started.wait(2)
+        worker.stop_calibration()
+        if restart:
+            worker.start_calibration(20, 2)
+        release.set()
+        assert worker.calibration_output.wait(worker.calibration_output.read()[1], .1)[0] is None
+    finally:
+        release.set()
         stop(worker)
 
 

@@ -211,6 +211,19 @@ class MeasurementWorker(threading.Thread):
         self._slot_selection = None
         self.slot_candidate = None
         self.slot_status = "Off"
+        self.calibration_output = LatestValue()
+        self._calibration_request: tuple[float, int] | None = None
+
+    def start_calibration(self, after: float, generation: int) -> None:
+        """Select a fresh live baseline without replacing the saved reference."""
+        with self._lock:
+            self._calibration_request = after, generation
+            self.calibration_output.clear()
+
+    def stop_calibration(self) -> None:
+        with self._lock:
+            self._calibration_request = None
+            self.calibration_output.clear()
 
     def configure(self, reference: ReferenceSnapshot | None, config: MatchConfig) -> None:
         with self._lock:
@@ -229,6 +242,7 @@ class MeasurementWorker(threading.Thread):
 
     def run(self) -> None:
         from .engine import MeasurementEngine
+        from .live_calibration import CalibrationObservation, LiveCalibration
         from .models import MatchResult, Region
         from .slots import SlotTracker
         from dataclasses import replace
@@ -238,6 +252,8 @@ class MeasurementWorker(threading.Thread):
         selection_key = None
         revision = -1
         previous_key = None
+        calibration = None
+        calibration_request = None
         while not self.stopping.is_set():
             frame, revision = self.frames.wait(revision)
             if self.paused.is_set() or frame is None:
@@ -245,6 +261,27 @@ class MeasurementWorker(threading.Thread):
             with self._lock:
                 reference, config = self._reference, self._config
                 selection = self._slot_selection
+                request = self._calibration_request
+            if request != calibration_request:
+                calibration = None
+                calibration_request = request
+            # Calibration must also run when no saved reference exists. Its
+            # own engine keeps target matching regions and slot tracking out
+            # of the motor response measurement.
+            if request is not None:
+                after, generation = request
+                if (frame.freshness_generation >= generation and frame.read_started_at is not None
+                        and frame.read_started_at >= after and frame.received_at >= after):
+                    try:
+                        if calibration is None:
+                            calibration = LiveCalibration()
+                            calibration.capture(frame)
+                        observation = CalibrationObservation(request, frame, calibration.measure(frame))
+                        with self._lock:
+                            if request == self._calibration_request:
+                                self.calibration_output.publish(observation)
+                    except Exception as exc:
+                        self.error = str(exc)
             if reference is None:
                 continue
             slot_key = (reference.reference_id, id(selection)) if selection is not None else None

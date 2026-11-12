@@ -195,7 +195,7 @@ class MotionDock(QtWidgets.QDockWidget):
         self.test_steps.setRange(-1000000, 1000000)
         self.test_steps.setValue(100)
         self.calibrate_button = QtWidgets.QPushButton("Run pixel calibration move")
-        self.calibrate_button.setToolTip("Record a baseline, move this signed number of driver steps, and measure pixel movement. Use a fixed reference and a visible feature.")
+        self.calibrate_button.setToolTip("Capture the latest live image, move this signed number of driver steps, and compare the new image with that baseline. Keep a textured feature visible.")
         form.addRow(self.pixel_scale)
         form.addRow("Test move (steps)", self.test_steps)
         form.addRow(self.calibrate_button)
@@ -364,6 +364,6 @@ class MotionDock(QtWidgets.QDockWidget):
         idle = status.phase in ("idle", "ready", "aligned", "stopped")
         self.setup_button.setEnabled(status.connected and status.velocity == 0 and status.remaining == 0)
         self.arm_button.setEnabled(status.connected and not status.armed)
-        live = context.connected and context.source_kind.lower() in ("ids", "basler") and not context.paused and context.reference_id is not None
+        live = context.live_camera_ready
         self.calibrate_button.setEnabled(status.armed and idle and live)
-        self.align_button.setEnabled(status.armed and idle and live and status.pixels_per_step is not None)
+        self.align_button.setEnabled(status.armed and idle and context.camera_ready and status.pixels_per_step is not None)

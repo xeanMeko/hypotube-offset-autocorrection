@@ -344,8 +344,9 @@ def test_zero_calibration_reports_error_and_closing_joins_motion(axis_window, ap
 
 
 @pytest.mark.parametrize("uncertain_large_offset", [False, True])
+@pytest.mark.parametrize("calibration_reference", ["target", "unrelated", "none"])
 def test_real_app_calibration_and_alignment_with_simulated_axis(
-        axis_window, application, monkeypatch, uncertain_large_offset):
+        axis_window, application, monkeypatch, uncertain_large_offset, calibration_reference):
     """Exercise camera barriers, measurement threads, UI config sync, and motor feedback together."""
     import measure_shift.app as app_module
     window, hardware = axis_window
@@ -377,8 +378,14 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
     monkeypatch.setattr(app_module, "create_source", lambda *args, **kwargs: camera)
     window.start_source("IDS", identifier="simulated")
     pump(application, lambda: window.latest_frame is not None, timeout=3, required=True)
-    window.set_reference(FramePacket.from_array(reference))
-    pump(application, lambda: window.last_pair is not None and window.motion_dock.calibrate_button.isEnabled(),
+    if calibration_reference != "none":
+        saved_image = np.zeros_like(reference) if calibration_reference == "unrelated" else reference
+        window.set_reference(FramePacket.from_array(saved_image))
+        pump(application, lambda: window.last_pair is not None, timeout=3, required=True)
+    saved_reference = window.reference
+    if calibration_reference == "unrelated":
+        assert not window.last_pair.result.usable
+    pump(application, lambda: window.motion_dock.calibrate_button.isEnabled(),
          timeout=3, required=True)
     window.motion_dock.distance.setValue(6)
     window.motion_dock.test_steps.setValue(8)
@@ -389,6 +396,13 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
     assert window.motion_dock.unit.currentData() == "pixels"
     assert window.motion_dock.distance.suffix() == " px"
     assert window.motion_dock.config.calibration_source_id == "ids:serial:fake-serial"
+    assert window.reference is saved_reference
+    if calibration_reference == "none":
+        assert not window.motion_dock.align_button.isEnabled()
+    if calibration_reference != "target":
+        window.set_reference(FramePacket.from_array(reference))
+        pump(application, lambda: window.last_pair is not None and window.last_pair.result.usable,
+             timeout=3, required=True)
     if uncertain_large_offset:
         from measure_shift.engine import MeasurementEngine
         measure = MeasurementEngine.measure

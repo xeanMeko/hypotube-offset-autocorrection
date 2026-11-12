@@ -370,14 +370,17 @@ never activates it.
 
 ### Calibrate pixels
 
-Use a real IDS or Basler camera, capture/load a fixed reference, and select a
-textured feature with a valid match. **Test move (steps)** defaults to **100**;
+Use a real IDS or Basler camera with a textured feature visible in the live
+image. **Test move (steps)** defaults to **100**;
 adjust this signed distance for the available travel, then click
 **Run pixel calibration move**. The app
-records a baseline, performs that finite move, and measures the pixel displacement
-after the motor stops and camera queues are refreshed. If the movement is below
-2 pixels or the match is uncertain, calibration is rejected; choose another test
-distance and retry. No automatic return move is made.
+captures a fresh pre-move live image, performs that finite move, and compares the
+post-move image with that live baseline after the motor stops and camera queues
+are refreshed. Calibration uses the full live image, independently of the saved
+reference and matching regions; no saved reference is required or changed.
+If the movement is below 2 pixels or the match is uncertain, calibration is
+rejected; choose another test distance and retry. No automatic return move is
+made.
 
 The signed calibration is `pixels_per_step = change in measured X / change in
 motor position`. For example, a +400-driver-step move observed as +20 pixels gives
