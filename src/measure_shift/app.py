@@ -181,6 +181,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for pane in (self.reference_pane, self.live_pane):
             pane.plot.hideAxis("bottom")
             pane.plot.hideAxis("left")
+            pane.cursor.hide()
         self.reference_pane.view.sigRangeChangedManually.connect(lambda _: self._link_views(self.reference_pane, self.live_pane))
         self.live_pane.view.sigRangeChangedManually.connect(lambda _: self._link_views(self.live_pane, self.reference_pane))
         split.addWidget(self.reference_pane)
@@ -1179,6 +1180,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 pane.view.setRange(rect=QtCore.QRectF(0, 0, w, h), padding=.03)
 
     def _link_views(self, source, target):
+        # Empty panes have no image coordinates to share with another view.
+        if source.array is None or target.array is None:
+            return
         x_range, y_range = source.view.viewRange()
         target.view.setRange(xRange=x_range, yRange=y_range, padding=0)
 

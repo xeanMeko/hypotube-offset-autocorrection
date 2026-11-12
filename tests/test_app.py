@@ -67,6 +67,61 @@ def wait_current_config(window, application):
                window.last_pair.key[2] == window.config.config_id)
 
 
+def zoom_out(pane):
+    event = QtWidgets.QGraphicsSceneWheelEvent(QtCore.QEvent.Type.GraphicsSceneWheel)
+    event.setDelta(-120)
+    event.setPos(pane.view.boundingRect().center())
+    pane.view.wheelEvent(event)
+
+
+@pytest.mark.parametrize("clear_reference", [False, True])
+def test_empty_reference_zoom_preserves_live_view(window, qt_application, clear_reference):
+    window.start_source("Demo", auto_reference=False)
+    pump_until(qt_application, lambda: window.live_pane.array is not None)
+    if clear_reference:
+        window.capture_reference()
+        window._clear_reference("Capture a new reference")
+    assert window.reference is None
+    assert window.reference_pane.array is None
+    original_range = np.array(window.live_pane.view.viewRange())
+    displayed_frame = window._displayed_frame
+
+    zoom_out(window.reference_pane)
+    qt_application.processEvents()
+    np.testing.assert_allclose(window.live_pane.view.viewRange(), original_range)
+    pump_until(qt_application, lambda: window._displayed_frame is not displayed_frame)
+    np.testing.assert_allclose(window.live_pane.view.viewRange(), original_range)
+
+
+def test_live_zoom_leaves_empty_reference_view_unchanged(window, qt_application):
+    window.live_pane.set_image(np.zeros((480, 640), np.uint8))
+    qt_application.processEvents()
+    reference_range = np.array(window.reference_pane.view.viewRange())
+    live_range = np.array(window.live_pane.view.viewRange())
+
+    zoom_out(window.live_pane)
+    qt_application.processEvents()
+    np.testing.assert_allclose(window.reference_pane.view.viewRange(), reference_range)
+    assert not np.allclose(window.live_pane.view.viewRange(), live_range)
+
+
+@pytest.mark.parametrize("source_name,target_name", [
+    ("reference_pane", "live_pane"),
+    ("live_pane", "reference_pane"),
+])
+def test_zoom_links_populated_image_views(window, qt_application, source_name, target_name):
+    for pane in (window.reference_pane, window.live_pane):
+        pane.set_image(np.zeros((480, 640), np.uint8))
+    qt_application.processEvents()
+    source, target = getattr(window, source_name), getattr(window, target_name)
+    original_range = np.array(target.view.viewRange())
+
+    zoom_out(source)
+    qt_application.processEvents()
+    np.testing.assert_allclose(target.view.targetRange(), source.view.viewRange())
+    assert not np.allclose(target.view.viewRange(), original_range)
+
+
 def test_demo_reference_roi_and_resolution_workflow(window, qt_application):
     start_demo(window, qt_application)
     assert window.live_pane.array.shape == (480, 640)
