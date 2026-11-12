@@ -1,6 +1,7 @@
 """Keyboard focus, axis settings, and application wiring without real hardware."""
 from dataclasses import replace
 import os
+import threading
 import time
 from types import SimpleNamespace
 
@@ -80,8 +81,6 @@ def axis_window(application):
     window = MainWindow(motion_hardware=hardware)
     window.show()
     window.activateWindow()
-    window.motion_dock.show()
-    window.motion_dock.connect_button.click()
     pump(application, lambda: window._motion_status and window._motion_status.phase == "ready", timeout=3, required=True)
     window.live_pane.plot.setFocus()
     window.activateWindow()
@@ -103,14 +102,18 @@ def test_connect_and_enable_mouse_clicks_survive_status_refresh(application, but
         assert window.motion_dock.motor_current.value() == 800
         assert window.motion_dock.left_channel.currentData() == 2
         assert window.motion_dock.right_channel.currentData() == 1
+        pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
+             timeout=3, required=True)
         if button_name == "arm_button":
-            window.motion_dock.connect_button.click()
-            pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
-                 timeout=3, required=True)
             window.motion_dock.setup_button.click()
             pump(application, lambda: not window._motion_status.armed and window._motion_status.setup_applied,
                  timeout=3, required=True)
-        button = getattr(window.motion_dock, button_name)
+        else:
+            window.motion_controls.connect_button.click()
+            pump(application, lambda: not window._motion_status.connected,
+                 timeout=3, required=True)
+        button = (window.motion_controls.connect_button if button_name == "connect_button"
+                  else window.motion_dock.arm_button)
         QtTest.QTest.mousePress(button, QtCore.Qt.MouseButton.LeftButton)
         # A normal human click spans multiple status timer updates.
         pump(application, timeout=.15)
@@ -165,6 +168,7 @@ def test_focus_loss_without_release_clears_keyboard(axis_window, application):
 
 def test_settings_fields_menus_and_modified_arrows_do_not_nudge(axis_window, application):
     window, hardware = axis_window
+    window.motion_dock.show()
     window.motion_dock.distance.setFocus()
     QtTest.QTest.keyClick(window.motion_dock.distance, QtCore.Qt.Key.Key_Right)
     window.live_pane.plot.setFocus()
@@ -300,14 +304,184 @@ def test_gui_limits_delayed_digital_captures_and_discards_stale_requests(applica
         application.processEvents()
 
 
-def test_default_calibration_move_uses_100_steps(application):
-    dock = MotionDock()
+def test_main_calibration_button_uses_the_test_move_from_axis_settings(application, monkeypatch):
+    window = MainWindow(motion_hardware=FakeHardware())
     requested = []
-    dock.calibrate_requested.connect(requested.append)
-    dock.calibrate_button.setEnabled(True)
-    dock.calibrate_button.click()
-    assert requested == [100]
-    dock.close()
+    monkeypatch.setattr(window.motion, "calibrate", requested.append)
+    try:
+        window.motion_controls.calibrate_button.setEnabled(True)
+        window.motion_controls.calibrate_button.click()
+        assert requested == [100]
+        window.motion_dock.test_steps.setValue(-250)
+        assert "-250 driver steps" in window.motion_controls.calibrate_button.toolTip()
+        window.motion_controls.calibrate_button.click()
+        assert requested == [100, -250]
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_main_axis_controls_work_with_settings_closed(application):
+    hardware = FakeHardware()
+    window = MainWindow(motion_hardware=hardware)
+    window.show()
+    try:
+        controls = window.motion_controls
+        application.processEvents()
+        assert not window.motion_dock.isVisible()
+        toolbar = window.main_toolbar
+        assert window.findChildren(QtWidgets.QToolBar) == [toolbar]
+        assert window.toolBarArea(toolbar) == QtCore.Qt.ToolBarArea.TopToolBarArea
+        assert not window.toolBarBreak(toolbar)
+        assert not window.tools_menu.isVisible()
+        assert window.motion_dock.toggleViewAction() in window.tools_menu.actions()
+        window.resize(1100, 760)
+        application.processEvents()
+        for button in (controls.connect_button, controls.calibrate_button,
+                       controls.align_button, controls.stop_button):
+            assert button.isVisible()
+            assert toolbar.isAncestorOf(button)
+            assert not button.visibleRegion().isEmpty()
+        assert not window.tools_button.visibleRegion().isEmpty()
+        assert not controls.calibrate_button.isEnabled()
+        assert not controls.align_button.isEnabled()
+        pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
+             timeout=3, required=True)
+        assert controls.connect_button.isCheckable()
+        assert controls.connect_button.isChecked()
+        assert controls.connect_button.text() == "Disconnect hardware"
+        connected_size = controls.connect_button.size()
+        assert connected_size.width() >= controls.connect_button.sizeHint().width()
+        assert hardware.calls.count("connect") == 1
+        assert hardware.state.enabled and hardware.moves == []
+        assert controls.stop_button.isEnabled()
+        assert not controls.stop_button.visibleRegion().isEmpty()
+        assert not window.tools_button.visibleRegion().isEmpty()
+        assert not controls.calibrate_button.isEnabled()  # No live camera.
+        assert not controls.align_button.isEnabled()
+        assert "READY" in controls.status.text()
+        controls.stop_button.click()
+        pump(application, lambda: "stop" in hardware.calls, timeout=3, required=True)
+        controls.connect_button.click()
+        pump(application, lambda: not window._motion_status.connected, timeout=3, required=True)
+        assert controls.connect_button.text() == "Connect hardware"
+        assert controls.connect_button.size() == connected_size
+        assert not controls.connect_button.isChecked()
+        assert not hardware.state.enabled
+        assert not controls.stop_button.isEnabled()
+        controls.connect_button.click()
+        pump(application, lambda: window._motion_status.phase == "ready", timeout=3, required=True)
+        assert controls.connect_button.isChecked()
+        assert controls.connect_button.text() == "Disconnect hardware"
+        assert controls.connect_button.size() == connected_size
+        assert hardware.calls.count("connect") == 2
+        assert hardware.state.enabled and hardware.moves == []
+        assert not window.motion_dock.isVisible()
+        window.tools_menu.popup(window.tools_button.mapToGlobal(QtCore.QPoint(0, window.tools_button.height())))
+        application.processEvents()
+        assert window.tools_menu.isVisible()
+        window.motion_dock.toggleViewAction().trigger()
+        window.tools_menu.close()
+        application.processEvents()
+        assert window.motion_dock.isVisible()
+        assert not window.tools_menu.isVisible()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_startup_connection_keeps_toggle_pending_until_hardware_responds(application):
+    opening, release = threading.Event(), threading.Event()
+
+    class SlowHardware(FakeHardware):
+        def connect(self, *args):
+            opening.set()
+            if not release.wait(3):
+                raise RuntimeError("Test connection timed out")
+            super().connect(*args)
+
+    hardware = SlowHardware()
+    window = MainWindow(motion_hardware=hardware)
+    try:
+        pump(application, opening.is_set, timeout=2, required=True)
+        pump(application, timeout=.15)
+        button = window.motion_controls.connect_button
+        assert button.isChecked() and not button.isEnabled()
+        assert not hardware.moves
+        release.set()
+        pump(application, lambda: button.isEnabled(), timeout=3, required=True)
+        assert button.isChecked() and window._motion_status.armed
+        assert hardware.calls.count("connect") == 1 and not hardware.moves
+    finally:
+        release.set()
+        window.close()
+        application.processEvents()
+
+
+def test_failed_startup_connection_can_be_retried_and_connection_loss_clears_toggle(application):
+    class UnavailableHardware(FakeHardware):
+        unavailable = True
+
+        def connect(self, *args):
+            super().connect(*args)
+            if self.unavailable:
+                raise RuntimeError("Hardware unavailable")
+
+        def read_state(self):
+            if self.unavailable:
+                raise RuntimeError("Connection lost")
+            return super().read_state()
+
+    hardware = UnavailableHardware()
+    window = MainWindow(motion_hardware=hardware)
+    button = window.motion_controls.connect_button
+    try:
+        pump(application, lambda: button.isEnabled(), timeout=3, required=True)
+        assert not button.isChecked()
+        assert "Hardware unavailable" in window.motion_controls.status.text()
+        pump(application, timeout=.15)
+        assert hardware.calls.count("connect") == 1
+        hardware.unavailable = False
+        button.click()
+        pump(application, lambda: window._motion_status.phase == "ready", timeout=3, required=True)
+        assert button.isChecked() and hardware.state.enabled
+        hardware.unavailable = True
+        pump(application, lambda: not button.isChecked(), timeout=3, required=True)
+        assert "Connection lost" in window.motion_controls.status.text()
+        assert not hardware.state.enabled and not hardware.moves
+        assert hardware.calls.count("connect") == 2
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_startup_connects_using_restored_axis_settings(application, tmp_path):
+    from measure_shift.models import MatchConfig
+    from measure_shift.storage import save_profile
+
+    path = tmp_path / "startup.json"
+    config = MotionConfig(host="saved-host", port=4224, stepper_uid="saved-stepper",
+                          digital_uid="saved-input", motor_current_ma=900, step_resolution=16)
+    save_profile(path, MatchConfig(), 1, 1, motion=config.to_dict())
+
+    class RecordingHardware(FakeHardware):
+        def connect(self, *args):
+            self.connection_args = args
+            super().connect(*args)
+
+    hardware = RecordingHardware()
+    window = MainWindow(motion_hardware=hardware, settings_path=path)
+    try:
+        pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
+             timeout=3, required=True)
+        assert hardware.connection_args == ("saved-host", 4224, "saved-stepper", "saved-input")
+        assert hardware.state.motor_current_ma == 900 and hardware.state.step_resolution == 16
+        assert hardware.state.enabled and hardware.moves == []
+        assert hardware.calls.count("connect") == 1
+        assert window.motion_controls.connect_button.isChecked()
+    finally:
+        window.close()
+        application.processEvents()
 
 
 @pytest.mark.parametrize("steps,pixels", [(400, 20), (400, -20), (1, 49)])
@@ -318,6 +492,11 @@ def test_known_pixel_nudge_calibrates_without_motor_movement_and_is_saved(
     hardware = FakeHardware()
     path = tmp_path / "known-distance.json"
     window = MainWindow(motion_hardware=hardware, settings_path=path)
+    pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
+         timeout=3, required=True)
+    window.motion_controls.connect_button.click()
+    pump(application, lambda: not window._motion_status.connected, timeout=3, required=True)
+    connects = hardware.calls.count("connect")
     context = MotionContext(source_id="ids:serial:known", source_kind="IDS", shape=(32, 48),
                             config_id=window.config.config_id, connected=True)
     monkeypatch.setattr(window, "_axis_context", lambda: context)
@@ -337,7 +516,7 @@ def test_known_pixel_nudge_calibrates_without_motor_movement_and_is_saved(
         assert dock.config.calibration_shape == context.shape
         assert dock.config.speed_steps() == 200
         assert window.reference is None
-        assert not hardware.moves and "connect" not in hardware.calls
+        assert not hardware.moves and hardware.calls.count("connect") == connects
         assert not hardware.state.enabled
         dock.distance.setValue(abs(pixels) * 2)
         assert dock.config.distance_steps() == steps * 2
@@ -446,20 +625,23 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
     saved_reference = window.reference
     if calibration_reference == "unrelated":
         assert not window.last_pair.result.usable
-    pump(application, lambda: window.motion_dock.calibrate_button.isEnabled(),
+    assert not window.motion_dock.isVisible()
+    assert window.motion_controls.calibrate_button.isVisible()
+    pump(application, lambda: window.motion_controls.calibrate_button.isEnabled(),
          timeout=3, required=True)
     window.motion_dock.distance.setValue(6)
     window.motion_dock.test_steps.setValue(8)
-    window.motion_dock.calibrate_button.click()
+    window.motion_controls.calibrate_button.click()
     pump(application, lambda: window.motion_dock.config.pixels_per_step is not None,
          timeout=5, required=True)
     assert window.motion_dock.config.pixels_per_step == pytest.approx(.5, abs=.04)
     assert window.motion_dock.unit.currentData() == "pixels"
     assert window.motion_dock.distance.suffix() == " px"
     assert window.motion_dock.config.calibration_source_id == "ids:serial:fake-serial"
+    assert "px / driver step" in window.motion_dock.pixel_scale.text()
     assert window.reference is saved_reference
     if calibration_reference == "none":
-        assert not window.motion_dock.align_button.isEnabled()
+        assert not window.motion_controls.align_button.isEnabled()
     if calibration_reference != "target":
         window.set_reference(FramePacket.from_array(reference))
         pump(application, lambda: window.last_pair is not None and window.last_pair.result.usable,
@@ -477,13 +659,14 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
         monkeypatch.setattr(MeasurementEngine, "measure", coarse_uncertain)
         pump(application, lambda: window.last_pair.result.validity == "uncertain",
              timeout=2, required=True)
-    pump(application, lambda: window.motion_dock.align_button.isEnabled(), timeout=2, required=True)
-    window.motion_dock.align_button.click()
+    pump(application, lambda: window.motion_controls.align_button.isEnabled(), timeout=2, required=True)
+    window.motion_controls.align_button.click()
     pump(application, lambda: "X aligned" in window._motion_status.message, timeout=8, required=True)
     assert abs(window.last_pair.result.dx) <= window.tolerance.value()
     assert window.last_pair.result.dy > 2
     assert window.state.text() == "OUTSIDE TOLERANCE"
     assert camera.freshen_count >= 4
+    assert not window.motion_dock.isVisible()
 
 
 def test_loading_profile_disconnects_hardware_without_activation(axis_window, application, monkeypatch, tmp_path):

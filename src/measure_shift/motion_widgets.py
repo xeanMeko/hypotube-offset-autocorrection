@@ -77,27 +77,75 @@ class AxisKeyboardFilter(QtCore.QObject):
         return True
 
 
+class MotionControls(QtCore.QObject):
+    """Everyday axis actions and status readout."""
+
+    def __init__(self, toolbar):
+        super().__init__(toolbar)
+        self.connect_button = QtWidgets.QPushButton("Connect hardware")
+        self.connect_button.setObjectName("axisConnectButton")
+        self.connect_button.setCheckable(True)
+        self.connect_button.setToolTip("Automatically connects at startup. Toggle off to stop and disconnect; toggle on to apply motor settings and enable movement. Release held directions before moving.")
+        self._connection_revision = 0
+        self.calibrate_button = QtWidgets.QPushButton("Run pixel calibration")
+        self.calibrate_button.setObjectName("pixelCalibrationButton")
+        self.align_button = QtWidgets.QPushButton("Align X")
+        self.align_button.setObjectName("alignXButton")
+        self.align_button.setToolTip("Align X to the reference using the saved pixel calibration and current tolerance.")
+        self.stop_button = QtWidgets.QPushButton("STOP")
+        self.stop_button.setObjectName("axisStopButton")
+        for button in (self.connect_button, self.calibrate_button, self.align_button, self.stop_button):
+            toolbar.addWidget(button)
+        self.status = QtWidgets.QLabel("Disconnected · motion disabled")
+        self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.status.setWordWrap(False)
+        self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.set_calibration_move(100)
+        for button in (self.calibrate_button, self.align_button, self.stop_button):
+            button.setEnabled(False)
+
+    def set_calibration_move(self, steps):
+        self.calibrate_button.setToolTip(
+            f"Capture a fresh live image, move {steps:+,} driver steps, and measure the pixel movement. "
+            "Keep a textured feature visible. Change the test move in Linear Axis settings → Pixel calibration.")
+
+    def set_connection_pending(self, connected, revision):
+        self._connection_revision = revision
+        with QtCore.QSignalBlocker(self.connect_button):
+            self.connect_button.setChecked(connected)
+        self.connect_button.setEnabled(False)
+
+    def display_status(self, status, context):
+        # Set each action's final state once so refreshes do not cancel a mouse press.
+        if status.connection_revision >= self._connection_revision:
+            with QtCore.QSignalBlocker(self.connect_button):
+                self.connect_button.setChecked(status.connected)
+            self.connect_button.setText("Disconnect hardware" if status.connected else "Connect hardware")
+            self.connect_button.setEnabled(True)
+        self.stop_button.setEnabled(status.connected)
+        self.status.setText(f"{status.phase.upper()} · {status.message}")
+        self.status.setToolTip(self.status.text())
+        scale = status.pixels_per_step
+        idle = status.phase in ("idle", "ready", "aligned", "stopped")
+        self.calibrate_button.setEnabled(status.armed and idle and context.live_camera_ready)
+        self.align_button.setEnabled(status.armed and idle and context.camera_ready and scale is not None)
+
+
 class MotionDock(QtWidgets.QDockWidget):
     config_changed = QtCore.Signal(object)
-    connect_requested = QtCore.Signal()
     setup_requested = QtCore.Signal()
     arm_requested = QtCore.Signal()
-    stop_requested = QtCore.Signal()
-    calibrate_requested = QtCore.Signal(int)
     known_distance_requested = QtCore.Signal(float)
-    align_requested = QtCore.Signal()
     error = QtCore.Signal(str)
 
     def __init__(self, config=None, parent=None):
-        super().__init__("Linear axis", parent)
+        super().__init__("Linear Axis", parent)
         self.setObjectName("linearAxisDock")
         self._config = config or MotionConfig()
         self._syncing = False
         content = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content)
-        self.status = QtWidgets.QLabel("Disconnected · motion disabled")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
         connection = QtWidgets.QGroupBox("Bricklet connection")
         form = QtWidgets.QFormLayout(connection)
         self.host = QtWidgets.QLineEdit()
@@ -108,9 +156,6 @@ class MotionDock(QtWidgets.QDockWidget):
         for label, control in (("Host", self.host), ("Port", self.port),
                                ("Stepper UID", self.stepper_uid), ("Digital In UID", self.digital_uid)):
             form.addRow(label, control)
-        self.connect_button = QtWidgets.QPushButton("Connect hardware")
-        self.connect_button.setToolTip("Connect, apply motor settings, and enable movement. A held direction must be released before moving.")
-        form.addRow(self.connect_button)
         layout.addWidget(connection)
 
         inputs = QtWidgets.QGroupBox("Joystick wiring")
@@ -212,8 +257,6 @@ class MotionDock(QtWidgets.QDockWidget):
         self.test_steps = QtWidgets.QSpinBox()
         self.test_steps.setRange(-1000000, 1000000)
         self.test_steps.setValue(100)
-        self.calibrate_button = QtWidgets.QPushButton("Run pixel calibration move")
-        self.calibrate_button.setToolTip("Capture the latest live image, move this signed number of driver steps, and compare the new image with that baseline. Keep a textured feature visible.")
         self.known_pixel_distance = self._number(-1e9, 1e9, 8)
         self.known_pixel_distance.setSuffix(" px")
         self.known_pixel_distance.setToolTip("Known X movement for a positive driver-step nudge. Use a negative value if positive motor steps move the image left.")
@@ -226,24 +269,12 @@ class MotionDock(QtWidgets.QDockWidget):
         form.addRow(self.known_distance_hint)
         form.addRow(self.use_known_distance_button)
         form.addRow("Test move (steps)", self.test_steps)
-        form.addRow(self.calibrate_button)
         layout.addWidget(calibration)
-        self.align_button = QtWidgets.QPushButton("Align X")
-        self.stop_button = QtWidgets.QPushButton("STOP")
-        self.stop_button.setStyleSheet("font-weight: bold; background: #773e38")
         layout.addStretch()
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
-        shell = QtWidgets.QWidget()
-        shell_layout = QtWidgets.QVBoxLayout(shell)
-        shell_layout.setContentsMargins(4, 0, 4, 4)
-        shell_layout.addWidget(scroll, 1)
-        actions = QtWidgets.QHBoxLayout()
-        actions.addWidget(self.align_button, 1)
-        actions.addWidget(self.stop_button, 1)
-        shell_layout.addLayout(actions)
-        self.setWidget(shell)
+        self.setWidget(scroll)
         self.setMinimumWidth(320)
         for control in (self.host, self.stepper_uid, self.digital_uid, self.motor_current):
             control.editingFinished.connect(self._edited)
@@ -254,14 +285,10 @@ class MotionDock(QtWidgets.QDockWidget):
         for control in (self.active_high, self.invert_direction, self.interpolation):
             control.toggled.connect(self._edited)
         self.unit.currentIndexChanged.connect(self._unit_changed)
-        self.connect_button.clicked.connect(self.connect_requested)
         self.setup_button.clicked.connect(self.setup_requested)
         self.arm_button.clicked.connect(self.arm_requested)
-        self.stop_button.clicked.connect(self.stop_requested)
-        self.calibrate_button.clicked.connect(lambda: self.calibrate_requested.emit(self.test_steps.value()))
         self.use_known_distance_button.clicked.connect(
             lambda: self.known_distance_requested.emit(self.known_pixel_distance.value()))
-        self.align_button.clicked.connect(self.align_requested)
         self.set_config(self._config)
         self.set_connected(False)
 
@@ -375,24 +402,19 @@ class MotionDock(QtWidgets.QDockWidget):
             self.error.emit(str(exc))
 
     def _display_connection(self, connected):
-        self.connect_button.setText("Disconnect hardware" if connected else "Connect hardware")
         for control in (self.host, self.port, self.stepper_uid, self.digital_uid):
             control.setEnabled(not connected)
-        self.stop_button.setEnabled(connected)
 
     def set_connected(self, connected):
         self._display_connection(connected)
         self.setup_button.setEnabled(connected)
         self.arm_button.setEnabled(False)
-        self.calibrate_button.setEnabled(False)
         self.use_known_distance_button.setEnabled(False)
-        self.align_button.setEnabled(False)
 
     def display_status(self, status, context):
         # Set each action's final state once. Temporarily disabling a button
         # during a refresh cancels a mouse press before its release arrives.
         self._display_connection(status.connected)
-        self.status.setText(f"{status.phase.upper()} · {status.message}")
         self.inputs.setText("   ".join(f"{i}: {'HIGH' if value else 'low'}" for i, value in enumerate(status.inputs4)))
         if status.connected:
             self.device_settings.setText(f"Device: {status.motor_current_ma} mA · 1/{status.step_resolution} step\nPosition: {status.position:,} steps · {'movement enabled' if status.armed else 'movement disabled'}")
@@ -402,8 +424,6 @@ class MotionDock(QtWidgets.QDockWidget):
         self.setup_button.setEnabled(status.connected and status.velocity == 0 and status.remaining == 0)
         self.arm_button.setEnabled(status.connected and not status.armed)
         live = context.live_camera_ready
-        self.calibrate_button.setEnabled(status.armed and idle and live)
         self.use_known_distance_button.setEnabled(
             live and (idle or status.phase in ("disconnected", "connected"))
             and status.velocity == 0 and status.remaining == 0)
-        self.align_button.setEnabled(status.armed and idle and context.camera_ready and status.pixels_per_step is not None)

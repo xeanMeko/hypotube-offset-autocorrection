@@ -29,7 +29,16 @@ def test_fresh_gui_startup(module_name, widget_name):
 
         application = QtWidgets.QApplication([])
         widget_class = getattr(module, sys.argv[2])
-        widget = widget_class("Startup") if sys.argv[2] == "ImagePane" else widget_class()
+
+        class UnavailableHardware:
+            def connect(self, *args):
+                raise RuntimeError("Motion hardware is unavailable in tests")
+
+            def shutdown(self, timeout_s=2):
+                pass
+
+        widget = (widget_class("Startup") if sys.argv[2] == "ImagePane"
+                  else widget_class(motion_hardware=UnavailableHardware()))
         widget.show()
         application.processEvents()
         widget.close()
@@ -72,6 +81,16 @@ def test_launcher_remembers_source_and_honors_command_line_overrides(arguments, 
                      ui={"source_kind": "Basler", "device_id": "remembered-camera"})
 
         class Window(app.MainWindow):
+            def __init__(self):
+                class UnavailableHardware:
+                    def connect(self, *args):
+                        raise RuntimeError("Motion hardware is unavailable in tests")
+
+                    def shutdown(self, timeout_s=2):
+                        pass
+
+                super().__init__(motion_hardware=UnavailableHardware())
+
             def start_source(self, kind, **kwargs):
                 print(json.dumps([kind, kwargs["identifier"]]), flush=True)
                 self.close()

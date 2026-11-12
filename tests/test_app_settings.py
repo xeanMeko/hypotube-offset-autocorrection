@@ -1,4 +1,5 @@
-"""Remember desktop preferences across restarts without connecting a motor."""
+"""Remember desktop preferences across restarts when hardware is unavailable."""
+from dataclasses import replace
 import json
 import os
 import time
@@ -25,7 +26,7 @@ class DisconnectedHardware:
 
     def connect(self, *args):
         self.connects += 1
-        raise RuntimeError("A settings restore must not connect hardware")
+        raise RuntimeError("Hardware is unavailable in this test")
 
     def shutdown(self, timeout_s=2):
         pass
@@ -62,8 +63,9 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock.speed.setValue(125)
         dock.frequency.setValue(4)
         window.tolerance.setValue(2.5)
+        # Internal quality thresholds survive changes to the visible controls.
+        window._set_config(replace(window.config, min_response=.25))
         window.scale.setCurrentIndex(window.scale.findData(.5))
-        window.min_response.setValue(.25)
         window.view_mode.setCurrentText("Absolute difference")
         window.trend_toggle.setChecked(True)
         window.dock.show()
@@ -90,7 +92,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
     restored = MainWindow(motion_hardware=hardware)
     restored.show()
     try:
-        pump_until(application, lambda: restored.motion.controller.config_revision > 0)
+        pump_until(application, lambda: restored.motion_controls.connect_button.isEnabled())
         dock = restored.motion_dock
         assert dock.config.left_channel == 0 and dock.config.right_channel == 3
         assert dock.config.reference_channel == 1 and dock.reference_channel.currentData() == 1
@@ -107,7 +109,8 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert restored.motion_dock.isVisible() and restored.dock.isVisible()
         assert restored.dock.tabs.currentIndex() == 5 and restored.dock.mode.currentText() == "Live"
         assert not restored.motion.controller.connected and not restored.motion.controller.armed
-        assert hardware.connects == 0
+        assert hardware.connects == 2
+        assert not restored.motion_controls.connect_button.isChecked()
     finally:
         restored.close()
         application.processEvents()

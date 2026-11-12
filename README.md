@@ -108,7 +108,7 @@ glibc and desktop libraries. See
 ## Align a sample
 
 1. Choose Demo, Images, Video, Basler, or IDS. Select a file/directory for replay,
-   or use **Discover** to list cameras. Use **Connect / Open** to begin acquisition.
+   or use **Tools → Discover cameras** to list cameras. Use **Connect / Open** to begin acquisition.
    Use **File → Open image sequence folder…** for a folder rather than one image.
 2. Connecting an IDS or Basler camera automatically applies its highest supported
    pixel clock (IDS), then highest frame rate, then maximum exposure allowed at
@@ -125,11 +125,13 @@ glibc and desktop libraries. See
    rate and exposure after applying the clock if their new limits are needed.
 3. Use **Capture reference** on the desired frame, or load a saved reference.
    The demo starts with an automatic reference.
-4. Watch X, Y, total displacement, tolerance status, and the correction arrow
+4. Watch X and Y displacement, tolerance status, and the correction arrow
    while physically adjusting the sample. Positive X points right and positive Y
    points down in the image. The yellow arrow shows the negative measured shift;
    its displayed length is capped to keep it inside the image. Use the numeric
-   readout for the full correction magnitude.
+   readout for the full correction magnitude. X/Y readouts show one decimal
+   place and average valid readings over 150 ms to reduce jitter. Tolerance
+   status, motion control, analytics, and exports use the original measurements.
 5. Inspect the actual overlap, red/cyan overlay, or difference view as needed.
    The **compensated preview** applies a software translation and is labeled:
    visual agreement in that preview does not move the physical sample.
@@ -151,10 +153,9 @@ and camera disconnection have separate states. The correlation response is a
 matching diagnostic, **not a probability**. Residual comparisons are diagnostic
 only and do not reject a match. Repeated patterns and large motions still require visual
 inspection. **Stale measurement** indicates the last comparison is older than
-the allowance for the source frame rate and processing time; the measurement age
-is also shown numerically.
+the allowance for the source frame rate and processing time.
 
-**Pause view** pauses display and measurement updates while acquisition continues.
+**Tools → Pause view** pauses display and measurement updates while acquisition continues.
 Resume to measure the newest available frame rather than replaying a backlog.
 The optional offset-history graph shows the last 600 measurements.
 
@@ -225,7 +226,7 @@ modest refresh rate while aligning.
   and panel visibility. On Linux the file is
   `$XDG_CONFIG_HOME/measure-shift/settings.json`, or
   `~/.config/measure-shift/settings.json` by default. Closing flushes pending
-  edits. Click **Connect hardware** to prepare the motor after startup.
+  edits. Hardware connects automatically after these settings are restored.
 - **Settings profiles:** save/load the matching region, method, scale, quality
   thresholds, tolerance, diagnostic refresh rate, and camera settings in JSON.
   Captured images and references are separate from profiles. After loading a
@@ -296,13 +297,36 @@ Install the optional motion bindings in the same environment as the app:
 .venv/bin/python -m pip install -c requirements-lock.txt -e '.[motion]'
 ```
 
-Open **Linear axis** from the toolbar or **View** menu. The defaults are Brick
+The [wiring diagram (SVG)](docs/wiring-diagram.svg) shows the computer, camera,
+Tinkerforge host, motor power and windings, joystick inputs, and an optional
+reference-capture button. It is also available as a
+[printable A3 PDF](docs/wiring-diagram.pdf) and [PNG](docs/wiring-diagram.png).
+The drawing follows the code's default channel assignments. The USB host,
+normally open joystick contacts, and separate 5 V control supply are labeled
+examples; confirm the actual board versions, motor leads, and supply ratings
+before wiring.
+
+The top controls use one toolbar with separators between acquisition, reference
+capture, and axis controls. **Connect hardware**, **Run pixel calibration**, **Align X**,
+and **STOP** stay visible. Pixel calibration uses the standard button style;
+**Align X** is green and **STOP** is red. The **Tools** drop-down opens camera discovery, source disconnect,
+reference loading, pause/resume, snapshots, analytics, and axis settings when needed.
+Axis status appears in the single-line bottom performance bar, with reserved
+space for each metric so changing digits do not shift the layout. Hover over the
+axis status to read the full message when space is limited.
+Calibration move distance and pixel scale appear in **Linear Axis → Pixel calibration**.
+Basic operation does not require opening the settings panel. Use **Tools → Linear Axis**
+or **View → Linear Axis** to adjust connection, wiring, motor, and nudge settings.
+The defaults are Brick
 Daemon at `localhost:4223`, Silent Stepper Bricklet 2.0 UID **2eoQ**, and Industrial
 Digital In 4 UID **27s4**. Both generations of Digital In 4 are supported. The app
-connects when you click **Connect hardware**, applies the selected motor settings,
-and enables the motor. Camera-only and Demo use do not require Tinkerforge bindings.
+connects automatically at startup, applies the selected motor settings,
+and enables the motor. **Connect hardware** is a toggle: checked means connected;
+switch it off to stop, disable, and disconnect the axis, or on to reconnect.
+If hardware is unavailable, the toggle returns to off and the axis status shows
+the connection error. Camera-only and Demo use do not require Tinkerforge bindings.
 
-1. Click **Connect hardware**. This applies the selected settings and enables
+1. Startup connects hardware automatically. This applies the restored settings and enables
    movement without starting a move; no separate setup or enable click is needed.
    If a direction is held during connection, release all directions before
    pressing again. Motor current defaults to **800 mA** for
@@ -359,7 +383,7 @@ never activates it.
 ### Calibrate pixels
 
 If you already know the pixel movement of the current **Distance / nudge**, enter
-it in **Pixel calibration → Known distance / nudge** and click **Use known distance**.
+it in **Linear Axis → Pixel calibration → Known distance / nudge** and click **Use known distance**.
 The hint shows the positive driver-step move that the value describes. Enter
 positive pixels when that move shifts the image right, or negative pixels when
 it shifts left. For example, **+400 driver steps** and **+20 px** give
@@ -369,9 +393,9 @@ You can then set the desired pixel nudge size in **Distance / nudge**. The saved
 calibration follows the same camera and step-resolution checks as measured calibration.
 
 Use a real IDS or Basler camera with a textured feature visible in the live
-image. **Test move (steps)** defaults to **100**;
-adjust this signed distance for the available travel, then click
-**Run pixel calibration move**. The app
+image. **Linear Axis → Pixel calibration → Test move (steps)** defaults to **100**;
+adjust this signed distance for the available travel if needed. Hover over
+**Run pixel calibration** in the toolbar to see the selected move distance, then click it. The app
 captures a fresh pre-move live image, performs that finite move, and compares the
 post-move image with that live baseline after the motor stops and camera queues
 are refreshed. Calibration uses the full live image, independently of the saved
@@ -402,7 +426,7 @@ steps/s**. Changes made to the new advanced motor speed setting are saved with p
 ### Mechanical X alignment
 
 With valid pixel calibration, a fixed reference, and neutral manual controls,
-click **Align X**. Each correction is capped at the current nudge distance and
+click **Align X** on the main screen. Each correction is capped at the current nudge distance and
 uses **200 driver steps/s** unless changed under **Advanced motor settings**.
 Distance / nudge is the main alignment adjustment. After each move, the controller waits at least
 200 ms (extended for exposure/frame timing), refreshes camera queues, and uses
@@ -410,7 +434,7 @@ only new feedback before correcting again. These frame timestamps describe
 application acquisition, not sensor exposure timestamps.
 
 **X aligned** requires three fresh, valid measurements within the existing **Tolerance**
-in pixels. Y and total displacement remain visible; the axis cannot correct Y.
+in pixels. Y displacement remains visible; the axis cannot correct Y.
 Demo, image replay, and video replay cannot drive automatic alignment. An uncertain
 match may drive coarse X corrections when either **|X| or |Y| exceeds 10 px and
 the current tolerance**. When both offsets are at or below that threshold, an

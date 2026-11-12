@@ -64,7 +64,7 @@ def install_pair(window, shift=(0, 0), reference=None):
 
 
 @pytest.mark.parametrize("width", [1500, 1000], ids=["regular", "narrow"])
-def test_match_warnings_preserve_sidebar_and_image_geometry(window, qapp, width):
+def test_measurement_updates_preserve_sidebar_and_image_geometry(window, qapp, width):
     pair = install_pair(window)
     valid = replace(pair.result, dx=.5, dy=.25, validity="valid", reasons=())
     warnings = (
@@ -74,11 +74,11 @@ def test_match_warnings_preserve_sidebar_and_image_geometry(window, qapp, width)
     )
     long_error = "Reference and current frame must have equal native dimensions. " * 20
     transitions = [
-        *((replace(valid, validity="uncertain", reasons=(warning,)), warning) for warning in warnings),
-        (replace(valid, validity="uncertain", reasons=warnings), "\n".join(warnings)),
-        (replace(valid, dx=float("nan"), dy=float("nan"), validity="invalid", reasons=(long_error,)), long_error),
-        (valid, "+X right · +Y down\nDisplacement is reference → current."),
-        (None, "+X right · +Y down\nDisplacement is reference → current."),
+        *((replace(valid, validity="uncertain", reasons=(warning,)), ("X   +0.5 px", "Y   +0.2 px")) for warning in warnings),
+        (replace(valid, validity="uncertain", reasons=warnings), ("X   +0.5 px", "Y   +0.2 px")),
+        (replace(valid, dx=float("nan"), dy=float("nan"), validity="invalid", reasons=(long_error,)), ("X   — px", "Y   — px")),
+        (valid, ("X   +0.5 px", "Y   +0.2 px")),
+        (None, ("X   — px", "Y   — px")),
     ]
     watched = (window.tolerance, window.area, window.reference_pane, window.live_pane)
 
@@ -99,21 +99,90 @@ def test_match_warnings_preserve_sidebar_and_image_geometry(window, qapp, width)
         window.last_pair = replace(pair, result=valid)
         window._update_readout()
         baseline = geometry_after_layout()
-        assert window.reasons.isReadOnly()
-        for result, expected_message in transitions:
+        for result, expected_readout in transitions:
             window.last_pair = replace(pair, result=result) if result is not None else None
             window._update_readout()
             geometry = geometry_after_layout()
             for actual, expected in zip(geometry, baseline):
-                assert actual == pytest.approx(expected, abs=1), expected_message
-            assert window.reasons.toPlainText() == expected_message
-            if expected_message == long_error:
-                scrollbar = window.reasons.verticalScrollBar()
-                assert scrollbar.maximum() > 0
-                scrollbar.setValue(scrollbar.maximum())
-                assert scrollbar.value() > 0
+                assert actual == pytest.approx(expected, abs=1), expected_readout
+            assert (window.x_value.text(), window.y_value.text()) == expected_readout
     finally:
         window.capture_worker = original_capture
+
+
+def test_readout_smooths_unique_frames_and_resumes_without_old_samples(window, monkeypatch):
+    window.tolerance.setValue(.5)
+    pair = install_pair(window)
+    now = [time.monotonic()]
+    monkeypatch.setattr("measure_shift.app.time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def show_reading(elapsed, dx, dy):
+        now[0] += elapsed
+        frame = replace(pair.frame, frame_id=f"readout-{now[0]}", received_at=now[0])
+        result = replace(pair.result, frame_id=frame.frame_id, dx=dx, dy=dy, validity="valid")
+        window.last_pair = replace(pair, frame=frame, result=result)
+        window._update_readout()
+
+    with monkeypatch.context() as context:
+        context.setattr(window, "capture_worker", SimpleNamespace(error=None, status="Streaming", controls={}))
+        show_reading(0, .24, -.24)
+        assert (window.x_value.text(), window.y_value.text()) == ("X   +0.2 px", "Y   -0.2 px")
+        show_reading(.05, .44, -.44)
+        expected = ("X   +0.3 px", "Y   -0.3 px")
+        assert (window.x_value.text(), window.y_value.text()) == expected
+        # Display smoothing must not change the tolerance decision or the stored result.
+        assert window.state.text() == "OUTSIDE TOLERANCE"
+        assert (window.last_pair.result.dx, window.last_pair.result.dy) == (.44, -.44)
+        for _ in range(8):
+            window._update_readout()
+        assert (window.x_value.text(), window.y_value.text()) == expected
+
+        show_reading(.05, .64, -.64)
+        assert (window.x_value.text(), window.y_value.text()) == ("X   +0.4 px", "Y   -0.4 px")
+        show_reading(.08, .64, -.64)
+        expected = ("X   +0.6 px", "Y   -0.6 px")
+        assert (window.x_value.text(), window.y_value.text()) == expected
+
+        window._pause(True)
+        now[0] += .4
+        window._update_readout()
+        assert (window.x_value.text(), window.y_value.text()) == expected
+        window._pause(False)
+        show_reading(.01, .84, -.84)
+        assert (window.x_value.text(), window.y_value.text()) == ("X   +0.8 px", "Y   -0.8 px")
+        show_reading(.2, -.01, .01)
+        assert (window.x_value.text(), window.y_value.text()) == ("X   +0.0 px", "Y   +0.0 px")
+
+
+@pytest.mark.parametrize("reset", ["reference", "config", "missing", "uncertain", "invalid"])
+def test_readout_restarts_after_context_changes_or_unusable_measurements(window, monkeypatch, reset):
+    pair = install_pair(window)
+    now = [time.monotonic()]
+    monkeypatch.setattr("measure_shift.app.time", SimpleNamespace(monotonic=lambda: now[0]))
+    window.last_pair = replace(pair, result=replace(pair.result, dx=.4, dy=.8, validity="valid"))
+    window._update_readout()
+
+    if reset == "reference":
+        window.set_reference(pair.reference.frame)
+    elif reset == "config":
+        window._set_config(window.config)
+    else:
+        window.last_pair = {
+            "missing": None,
+            "uncertain": replace(pair, result=replace(pair.result, dx=100, dy=100, validity="uncertain")),
+            "invalid": replace(pair, result=replace(pair.result, dx=float("nan"), dy=float("nan"), validity="invalid")),
+        }[reset]
+        window._update_readout()
+        expected = ("X   +100.0 px", "Y   +100.0 px") if reset == "uncertain" else ("X   — px", "Y   — px")
+        assert (window.x_value.text(), window.y_value.text()) == expected
+
+    now[0] += .02
+    frame = replace(pair.frame, frame_id="after-reset")
+    result = replace(pair.result, frame_id=frame.frame_id, reference_id=window.reference.reference_id,
+                     config_id=window.config.config_id, dx=2, dy=-2, validity="valid")
+    window.last_pair = replace(pair, reference=window.reference, config=window.config, frame=frame, result=result)
+    window._update_readout()
+    assert (window.x_value.text(), window.y_value.text()) == ("X   +2.0 px", "Y   -2.0 px")
 
 
 def test_off_and_hidden_dock_do_no_optional_diagnostic_work(window, qapp):

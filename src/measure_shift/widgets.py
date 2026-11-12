@@ -16,6 +16,43 @@ from .models import DiagnosticSnapshot, Region
 pg.setConfigOptions(imageAxisOrder="row-major", antialias=False, background="#101820", foreground="#d7e2eb")
 
 
+class MessageStatusBar(QtWidgets.QStatusBar):
+    """Show temporary messages in a shared area without hiding other readouts."""
+
+    def __init__(self, fallback, parent=None):
+        super().__init__(parent)
+        self.setSizeGripEnabled(False)
+        self._fallback = fallback
+        self._message = QtWidgets.QLabel()
+        self._message.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._message.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self._message.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.message_area = QtWidgets.QStackedWidget()
+        self.message_area.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.message_area.addWidget(fallback)
+        self.message_area.addWidget(self._message)
+        self._message_timer = QtCore.QTimer(self)
+        self._message_timer.setSingleShot(True)
+        self._message_timer.timeout.connect(self.clearMessage)
+
+    def showMessage(self, message, timeout=0):
+        previous = self.currentMessage()
+        self._message_timer.stop()
+        self._message.setText(message)
+        self._message.setToolTip(message)
+        self.message_area.setCurrentWidget(self._message if message else self._fallback)
+        if message and timeout > 0:
+            self._message_timer.start(timeout)
+        if message != previous:
+            self.messageChanged.emit(message)
+
+    def clearMessage(self):
+        self.showMessage("")
+
+    def currentMessage(self):
+        return self._message.text()
+
+
 class TimedPlotWidget(pg.PlotWidget):
     def __init__(self, *args, **kwargs):
         self.last_paint_ms = 0.0

@@ -222,6 +222,7 @@ class MotionStatus:
     config: MotionConfig = MotionConfig()
     config_revision: int = 0
     reference_capture: ReferenceCaptureRequest | None = None
+    connection_revision: int = 0
 
 
 class MotionController:
@@ -237,6 +238,7 @@ class MotionController:
     def __init__(self, config: MotionConfig | None = None):
         self.config = (config or MotionConfig()).validated()
         self.config_revision = 0
+        self.connection_revision = 0
         self.context = MotionContext()
         self.connected = False
         self.setup_applied = False
@@ -747,7 +749,7 @@ class MotionController:
                             self.config.pixels_per_step, self.config.calibration_source_id,
                             self.config.calibration_shape, self._corrections,
                             self._feedback.dx if self._feedback and math.isfinite(self._feedback.dx) else None,
-                            self.config, self.config_revision, self.reference_capture)
+                            self.config, self.config_revision, self.reference_capture, self.connection_revision)
 
 
 class MotionWorker(threading.Thread):
@@ -773,6 +775,7 @@ class MotionWorker(threading.Thread):
         self._keyboard_activity = False
         self._feedback = None
         self._config_revision = 0
+        self._connection_revision = 0
         self.output.publish(self.controller.snapshot())
 
     def _enqueue(self, name, value=None):
@@ -832,8 +835,14 @@ class MotionWorker(threading.Thread):
             self._calibration_request = None
         controller.submit_feedback(feedback)
 
-    def connect_hardware(self): self._enqueue("connect")
-    def disconnect_hardware(self): self._enqueue("disconnect")
+    def _request_connection(self, name):
+        with self._lock:
+            self._connection_revision += 1
+            self._commands.append((name, self._connection_revision))
+            return self._connection_revision
+
+    def connect_hardware(self): return self._request_connection("connect")
+    def disconnect_hardware(self): return self._request_connection("disconnect")
     def apply_setup(self): self._enqueue("setup")
     def arm(self): self._enqueue("arm")
     def stop(self):
@@ -888,18 +897,20 @@ class MotionWorker(threading.Thread):
                 controller.on_disconnected("Motion connection settings changed; reconnect")
             controller.configure(config, revision)
         elif name == "connect":
+            controller.connection_revision = value
             if controller.connected:
                 controller.message = "Motion hardware is already connected"
                 return
             config = controller.config
             self.hardware.connect(config.host, config.port, config.stepper_uid, config.digital_uid)
             controller.on_connected(self.hardware.read_state())
-            # Connection is the user's request to prepare this axis for use.
+            # Prepare the axis for use after either startup or a manual connection.
             # Require neutral once so controls held during connection cannot
             # start a move or replay a tap received while hardware was opening.
             self._sync_keyboard()
             self._command("arm", True)
         elif name == "disconnect":
+            controller.connection_revision = value
             if controller.connected:
                 self.hardware.shutdown()
             controller.on_disconnected()

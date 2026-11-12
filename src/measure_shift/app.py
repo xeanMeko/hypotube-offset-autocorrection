@@ -19,11 +19,14 @@ import pyqtgraph as pg
 
 from .models import FramePacket, MatchConfig, ReferenceSnapshot, Region, new_id
 from .motion import REFERENCE_CAPTURE_INTERVAL_S, MotionConfig, MotionContext, MotionWorker
-from .motion_widgets import AxisKeyboardFilter, MotionDock
+from .motion_widgets import AxisKeyboardFilter, MotionControls, MotionDock
 from .sources import create_source, discover_sources, read_gray
 from .storage import export_bundle, export_csv, load_profile, measurement_row, save_profile
-from .widgets import AnalyticsDock, ImagePane
+from .widgets import AnalyticsDock, ImagePane, MessageStatusBar
 from .workers import AnalyticsWorker, BackgroundTask, CaptureWorker, LatestValue, MeasurementWorker
+
+
+_READOUT_WINDOW_S = 0.15
 
 
 def _make_preview(pair, mode):
@@ -51,6 +54,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.latest_frame = None
         self._displayed_frame = None
         self.last_pair = None
+        self._readout_samples = deque()
+        self._readout_key = None
         self.last_diagnostic = None
         self.frozen_pair = None
         self.frames = LatestValue()
@@ -102,6 +107,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._restore_startup_settings()
         self._connect_settings_autosave()
         self._restoring_settings = False
+        self._connect_motion(True)
         self.motion.start()
         self.measurement.start()
         self.analytics.start()
@@ -111,48 +117,63 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.start(33)
 
     def _build_ui(self):
-        toolbar = self.addToolBar("Acquisition")
+        toolbar = self.main_toolbar = self.addToolBar("Main controls")
+        toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        self.tools_menu = QtWidgets.QMenu("Tools", self)
+        self.discover_action = self.tools_menu.addAction("Discover cameras", self.discover)
+        self.tools_menu.addAction("Disconnect source", lambda: self.disconnect_source())
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction("Load reference…", self.load_reference)
         self.source_kind = QtWidgets.QComboBox()
         self.source_kind.addItems(["Demo", "IDS", "Basler", "Images", "Video"])
         self.device = QtWidgets.QComboBox()
-        self.device.setMinimumWidth(180)
+        self.device.setMinimumWidth(140)
+        self.device.setMaximumWidth(180)
+        self.device.setMinimumContentsLength(14)
+        self.device.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.device.addItem("Built-in moving target", "")
-        toolbar.addWidget(QtWidgets.QLabel(" Source  "))
         toolbar.addWidget(self.source_kind)
         toolbar.addWidget(self.device)
-        self.discover_button = QtWidgets.QPushButton("Discover")
-        toolbar.addWidget(self.discover_button)
         self.connect_button = QtWidgets.QPushButton("Connect / Open")
         toolbar.addWidget(self.connect_button)
-        toolbar.addAction("Disconnect", lambda: self.disconnect_source())
         toolbar.addSeparator()
         toolbar.addAction("Capture reference", self.capture_reference)
-        toolbar.addAction("Load reference…", self.load_reference)
-        self.pause_action = toolbar.addAction("Pause view")
+        self.pause_action = self.tools_menu.addAction("Pause view")
         self.pause_action.setCheckable(True)
         self.pause_action.toggled.connect(self._pause)
-        toolbar.addSeparator()
-        toolbar.addAction("Save snapshot…", self.save_snapshot)
         self.source_kind.currentTextChanged.connect(self._source_changed)
-        self.discover_button.clicked.connect(self.discover)
         self.connect_button.clicked.connect(self.connect_selected)
+
+        toolbar.addSeparator()
+        self.motion_controls = MotionControls(toolbar)
+        tools_spacer = QtWidgets.QWidget()
+        tools_spacer.setObjectName("toolbarSpacer")
+        tools_spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(tools_spacer)
+        toolbar.addSeparator()
+        self.tools_button = QtWidgets.QToolButton()
+        self.tools_button.setText("Tools")
+        self.tools_button.setToolTip("Camera discovery, reference loading, view controls, snapshots, and settings")
+        self.tools_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.tools_button.setMenu(self.tools_menu)
+        toolbar.addWidget(self.tools_button)
+        self.tools_menu.addAction("Save snapshot…", self.save_snapshot)
+        self.tools_menu.addSeparator()
 
         content = QtWidgets.QWidget()
         main = QtWidgets.QVBoxLayout(content)
         heading = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("MEASURE SHIFT")
-        title.setObjectName("appTitle")
-        heading.addWidget(title)
-        heading.addStretch()
+        self.notice = QtWidgets.QLabel("Capture a reference, then adjust the part while watching the remaining offset.")
+        self.notice.setWordWrap(False)
+        self.notice.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.notice.setObjectName("notice")
+        heading.addWidget(self.notice, 1)
         self.connection_label = QtWidgets.QLabel("No source connected")
         self.connection_label.setObjectName("muted")
         heading.addWidget(self.connection_label)
         main.addLayout(heading)
-        self.notice = QtWidgets.QLabel("Capture a reference, then adjust the part while watching the remaining offset.")
-        self.notice.setWordWrap(True)
-        self.notice.setObjectName("notice")
-        main.addWidget(self.notice)
 
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.reference_pane = ImagePane("REFERENCE · capture or load an image")
@@ -177,24 +198,10 @@ class MainWindow(QtWidgets.QMainWindow):
         side.addWidget(self.state)
         self.x_value = QtWidgets.QLabel("X   — px")
         self.y_value = QtWidgets.QLabel("Y   — px")
-        self.distance_value = QtWidgets.QLabel("Total   — px")
-        for label in (self.x_value, self.y_value, self.distance_value):
+        for label in (self.x_value, self.y_value):
             label.setObjectName("readout")
+            label.setToolTip("Display averaged over 150 ms; tolerance uses the latest measurement.")
             side.addWidget(label)
-        self.correction_label = QtWidgets.QLabel("Image correction: —")
-        self.correction_label.setWordWrap(True)
-        side.addWidget(self.correction_label)
-        self.quality_label = QtWidgets.QLabel("Response: —\nOverlap: —")
-        side.addWidget(self.quality_label)
-        self.reasons = QtWidgets.QPlainTextEdit("+X right · +Y down\nDisplacement is reference → current.")
-        self.reasons.setReadOnly(True)
-        self.reasons.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.reasons.document().setDocumentMargin(0)
-        self.reasons.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.reasons.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.reasons.setAccessibleName("Match quality details")
-        self.reasons.setObjectName("muted")
-        side.addWidget(self.reasons)
         form = QtWidgets.QFormLayout()
         self.tolerance = QtWidgets.QDoubleSpinBox()
         self.tolerance.setRange(0, 100000)
@@ -202,7 +209,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tolerance.setValue(1)
         self.tolerance.setSuffix(" px")
         form.addRow("Tolerance", self.tolerance)
-        form.addRow("Method", QtWidgets.QLabel("Phase correlation"))
         self.area = QtWidgets.QComboBox()
         self.area.addItems(["Whole image", "Rectangle", "Circle"])
         form.addRow("Analyze", self.area)
@@ -245,16 +251,6 @@ class MainWindow(QtWidgets.QMainWindow):
         camera_layout.addRow(self.apply_camera)
         self.apply_camera.clicked.connect(self._apply_camera)
         side.addWidget(camera)
-        advanced = QtWidgets.QGroupBox("Match quality")
-        advanced_layout = QtWidgets.QFormLayout(advanced)
-        self.min_response = QtWidgets.QDoubleSpinBox()
-        self.min_response.setRange(0, 1)
-        self.min_response.setSingleStep(.05)
-        self.min_response.setValue(.1)
-        self.min_response.setToolTip("Phase correlation response; not a probability")
-        advanced_layout.addRow("Min response", self.min_response)
-        self.min_response.valueChanged.connect(self._matching_changed)
-        side.addWidget(advanced)
         side.addStretch()
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -265,8 +261,6 @@ class MainWindow(QtWidgets.QMainWindow):
         split.setSizes([560, 560, 290])
         main.addWidget(split, 1)
 
-        self.trend_toggle = QtWidgets.QCheckBox("Show offset history (last 600 measurements)")
-        main.addWidget(self.trend_toggle)
         self.trend_plot = pg.PlotWidget()
         self.trend_plot.setMaximumHeight(160)
         self.trend_plot.setLabel("left", "Displacement", units="px")
@@ -276,30 +270,48 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trend_y = self.trend_plot.plot(name="Y", pen=pg.mkPen("#62d4ef", width=2))
         self.trend_plot.hide()
         main.addWidget(self.trend_plot)
-        self.trend_toggle.toggled.connect(self.trend_plot.setVisible)
-        self.trend_toggle.toggled.connect(self._draw_trend)
-        self.performance_label = QtWidgets.QLabel("Camera FPS —   Measurement FPS —   Age —   Processing —")
-        main.addWidget(self.performance_label)
+        self.performance_bar = QtWidgets.QWidget()
+        performance = QtWidgets.QHBoxLayout(self.performance_bar)
+        performance.setContentsMargins(0, 0, 0, 0)
+        performance.setSpacing(16)
+        self.performance_labels = {}
+        for title in ("Camera FPS", "Measurement FPS", "Processing", "Scale", "Analytics"):
+            label = QtWidgets.QLabel(f"{title} —")
+            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            self.performance_labels[title] = label
+            performance.addWidget(label)
+        status_bar = MessageStatusBar(self.motion_controls.status, self)
+        self.setStatusBar(status_bar)
+        status_area = QtWidgets.QWidget()
+        status_area.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        status_layout = QtWidgets.QHBoxLayout(status_area)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(6)
+        status_layout.addWidget(status_bar.message_area, 1)
+        performance.insertWidget(2, status_area, 1)
+        status_bar.addPermanentWidget(self.performance_bar, 1)
         self.setCentralWidget(content)
         self.dock = AnalyticsDock(self)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self.dock)
         self.dock.hide()
-        toolbar.addAction(self.dock.toggleViewAction())
+        self.tools_menu.addAction(self.dock.toggleViewAction())
         self.dock.changed.connect(self._analysis_changed)
         self.dock.capture_requested.connect(self.capture_inspection)
         self.dock.export_requested.connect(self.export_inspection)
         self.motion_dock = MotionDock(parent=self)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.motion_dock)
         self.motion_dock.hide()
-        toolbar.addAction(self.motion_dock.toggleViewAction())
+        self.tools_menu.addAction(self.motion_dock.toggleViewAction())
         self.motion_dock.config_changed.connect(self._motion_config_changed)
-        self.motion_dock.connect_requested.connect(self._connect_motion)
+        self.motion_controls.connect_button.toggled.connect(self._connect_motion)
         self.motion_dock.setup_requested.connect(self.motion.apply_setup)
         self.motion_dock.arm_requested.connect(self.motion.arm)
-        self.motion_dock.stop_requested.connect(self._stop_motion)
-        self.motion_dock.calibrate_requested.connect(self._calibrate_motion)
+        self.motion_controls.stop_button.clicked.connect(self._stop_motion)
+        self.motion_controls.calibrate_button.clicked.connect(
+            lambda: self._calibrate_motion(self.motion_dock.test_steps.value()))
+        self.motion_dock.test_steps.valueChanged.connect(self.motion_controls.set_calibration_move)
         self.motion_dock.known_distance_requested.connect(self._set_known_pixel_distance)
-        self.motion_dock.align_requested.connect(self._align_motion)
+        self.motion_controls.align_button.clicked.connect(self._align_motion)
         self.motion_dock.error.connect(self._error)
 
         file_menu = self.menuBar().addMenu("File")
@@ -317,15 +329,31 @@ class MainWindow(QtWidgets.QMainWindow):
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.dock.toggleViewAction())
         view_menu.addAction(self.motion_dock.toggleViewAction())
+        self.trend_toggle = view_menu.addAction("Show offset history (last 600 measurements)")
+        self.trend_toggle.setCheckable(True)
+        self.trend_toggle.toggled.connect(self.trend_plot.setVisible)
+        self.trend_toggle.toggled.connect(self._draw_trend)
         view_menu.addAction("Fit images", self._fit_images)
         help_menu = self.menuBar().addMenu("Help")
         help_menu.addAction("About / workflow", self._about)
-        self.statusBar().showMessage("Ready · image-plane pixels · manual adjustment")
         self.setStyleSheet("""
             QMainWindow, QWidget { background: #19232e; color: #d7e2eb; font-size: 12px; }
-            QToolBar, QMenuBar { background: #202e3b; spacing: 6px; padding: 5px; }
+            QToolBar, QMenuBar { background: #202e3b; spacing: 4px; padding: 5px; }
             QPushButton, QComboBox, QDoubleSpinBox { background: #293a49; border: 1px solid #456071; border-radius: 4px; padding: 5px; }
             QPushButton:hover { background: #355367; } QPushButton:disabled { color: #73818d; }
+            QToolBar::separator { background: #456071; width: 1px; margin: 4px; }
+            QWidget#toolbarSpacer { background: transparent; }
+            QToolBar QToolButton { background: #293a49; border: 1px solid #456071; border-radius: 4px; padding: 5px; }
+            QToolBar QToolButton:hover { background: #355367; }
+            QToolBar QToolButton:checked { background: #416174; }
+            QPushButton#axisConnectButton { border-color: #568a91; }
+            QPushButton#axisConnectButton:!checked { background: #416174; border-color: #79bac2; }
+            QPushButton#alignXButton { background: #285344; border-color: #5d9d83; }
+            QPushButton#alignXButton:hover { background: #326a55; }
+            QPushButton#axisStopButton { background: #773e38; border-color: #b86c62; color: #fff1ee; font-weight: bold; }
+            QPushButton#axisStopButton:hover { background: #944a42; }
+            QPushButton#alignXButton:disabled { background: #253d35; border-color: #456958; color: #81958b; }
+            QPushButton#axisStopButton:disabled { background: #4b302e; border-color: #774c46; color: #a38b85; }
             QGroupBox { border: 1px solid #3a4b5a; border-radius: 5px; margin-top: 12px; padding-top: 12px; }
             QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #9eb9ca; }
             QLabel#appTitle { font-size: 22px; font-weight: 700; letter-spacing: 2px; color: #69dfb7; }
@@ -333,17 +361,28 @@ class MainWindow(QtWidgets.QMainWindow):
             QLabel#readout { font-size: 24px; font-weight: 600; padding: 3px; }
             QLabel#state { font-size: 15px; font-weight: 700; padding: 8px; border-radius: 4px; background: #293a49; }
             QLabel#notice { color: #b7cbd8; padding: 5px; }
-            QLabel#muted, QPlainTextEdit#muted { color: #99adbc; font-size: 11px; }
+            QLabel#muted { color: #99adbc; font-size: 11px; }
             QTabWidget::pane { border: 1px solid #456071; }
             QTabBar::tab { background: #293a49; padding: 7px; } QTabBar::tab:selected { background: #456071; }
             QCheckBox { padding: 3px; } QScrollArea { border: 0; }
+            QStatusBar::item { border: 0; }
         """)
-        # Keep changing diagnostics from moving the controls or resizing the
-        # image views. Long messages stay available by scrolling within here.
-        self.reasons.ensurePolished()
-        self.reasons.setFixedHeight(6 * self.reasons.fontMetrics().lineSpacing() + 2)
-        self.correction_label.ensurePolished()
-        self.correction_label.setFixedHeight(2 * self.correction_label.fontMetrics().lineSpacing())
+        # Reserve a single row; changing digits and messages must not move the views.
+        self.performance_bar.ensurePolished()
+        line_height = self.performance_bar.fontMetrics().lineSpacing()
+        self.performance_bar.setFixedHeight(line_height + 4)
+        for title, sample in (("Camera FPS", "999999.9"), ("Measurement FPS", "999999.9"),
+                              ("Processing", "999999.9 ms"), ("Scale", "0.25"), ("Analytics", "frozen")):
+            label = self.performance_labels[title]
+            metrics = label.fontMetrics()
+            label.setFixedSize(metrics.horizontalAdvance(f"{title} {sample}") + 8, line_height)
+        self.motion_controls.status.setFixedHeight(line_height)
+        # Reserve the longer label after the toolbar font and style are applied.
+        hardware_button = self.motion_controls.connect_button
+        hardware_button.setText("Disconnect hardware")
+        hardware_button.ensurePolished()
+        hardware_button.setFixedWidth(hardware_button.sizeHint().width())
+        hardware_button.setText("Connect hardware")
         self._source_changed(self.source_kind.currentText())
 
     def _task(self, function, callback, *, finish_before_close=False):
@@ -383,12 +422,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._motion_config_revision = self.motion.configure(config)
         self._schedule_settings_save()
 
-    def _connect_motion(self):
+    def _connect_motion(self, connected):
         self.axis_keyboard.clear()
-        if self._motion_status is not None and self._motion_status.connected:
-            self.motion.disconnect_hardware()
+        if connected:
+            revision = self.motion.connect_hardware()
         else:
-            self.motion.connect_hardware()
+            revision = self.motion.disconnect_hardware()
+        self.motion_controls.set_connection_pending(connected, revision)
 
     def _stop_motion(self):
         self.axis_keyboard.clear()
@@ -439,6 +479,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.motion_dock.set_config(status.config)
                 self._schedule_settings_save()
         self.motion_dock.display_status(status, context)
+        self.motion_controls.display_status(status, context)
         request = status.reference_capture
         if request != self._reference_capture_request:
             self._reference_capture_request = request
@@ -456,13 +497,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _source_changed(self, kind):
         self.device.clear()
         self.device.addItem("Discover cameras" if kind in ("IDS", "Basler") else "Built-in moving target" if kind == "Demo" else "Choose a file or folder…", "")
-        self.discover_button.setEnabled(kind in ("IDS", "Basler"))
+        self.discover_action.setEnabled(kind in ("IDS", "Basler"))
 
     def discover(self):
         kind = self.source_kind.currentText()
-        self.discover_button.setEnabled(False)
+        self.discover_action.setEnabled(False)
         def done(devices):
-            self.discover_button.setEnabled(True)
+            self.discover_action.setEnabled(True)
             if kind != self.source_kind.currentText():
                 return
             self.device.clear()
@@ -473,7 +514,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.notice.setText(f"No {kind} cameras found. Connect the camera and check it in the manufacturer's viewer.")
         def action():
             return discover_sources(kind)
-        task = BackgroundTask(action, done, lambda error: (self.discover_button.setEnabled(True), self._error(error)))
+        task = BackgroundTask(action, done, lambda error: (self.discover_action.setEnabled(True), self._error(error)))
         self.tasks.append(task)
         task.start()
 
@@ -583,7 +624,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._analysis_changed()
         self._view_changed()
         self._update_readout()
-        self.notice.setText("Reference captured. Adjust the part and watch X / Y / total displacement. Yellow arrows show image correction.")
+        self.notice.setText("Reference captured. Adjust the part and watch X / Y displacement. Yellow arrows show image correction.")
 
     def _clear_reference(self, reason):
         self._stop_motion()
@@ -648,12 +689,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._schedule_settings_save()
 
     def _sync_matching_controls(self):
-        for widget in (self.area, self.scale, self.min_response):
+        for widget in (self.area, self.scale):
             widget.blockSignals(True)
         self.area.setCurrentIndex({"full": 0, "rectangle": 1, "circle": 2}[self.config.region.kind])
         self.scale.setCurrentIndex({1: 0, .5: 1, .25: 2}[self.config.scale])
-        self.min_response.setValue(self.config.min_response)
-        for widget in (self.area, self.scale, self.min_response):
+        for widget in (self.area, self.scale):
             widget.blockSignals(False)
 
     def _area_changed(self):
@@ -663,7 +703,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_matching_controls()
 
     def _matching_changed(self):
-        self._set_config(replace(self.config, scale=self.scale.currentData(), min_response=self.min_response.value()))
+        self._set_config(replace(self.config, scale=self.scale.currentData()))
 
     def _region_dragged(self, region):
         self._set_config(replace(self.config, region=region))
@@ -793,6 +833,8 @@ class MainWindow(QtWidgets.QMainWindow):
             state, color = "INPUT ENDED", "#ffcd66"
         elif self.reference is None:
             state, color = "NO REFERENCE", "#9eb9ca"
+        elif self._motion_status is not None and self._motion_status.phase == "aligning":
+            state, color = "ALIGNING", "#9eb9ca"
         elif result is None:
             state, color = "MEASURING…", "#9eb9ca"
         elif time.monotonic() - pair.frame.received_at > max(1.0,
@@ -810,16 +852,30 @@ class MainWindow(QtWidgets.QMainWindow):
             self.state.setStyleSheet(f"color: {color}")
             self._state_color = color
         finite = result is not None and np.isfinite([result.dx, result.dy]).all()
-        suffix = " (estimate)" if result and not result.usable else ""
-        self.x_value.setText(f"X   {result.dx:+.2f} px" if finite else "X   — px")
-        self.y_value.setText(f"Y   {result.dy:+.2f} px" if finite else "Y   — px")
-        self.distance_value.setText(f"Total   {result.distance:.2f} px" if finite else "Total   — px")
-        self.correction_label.setText(f"Image correction{suffix}:\nX {-result.dx:+.2f} · Y {-result.dy:+.2f} px" if finite else "Image correction: —")
-        response = f"{result.response:.4f}" if result and math.isfinite(result.response) else "—"
-        self.quality_label.setText(f"Response: {response}\nOverlap: {result.overlap:.1%}" if result else "Response: —\nOverlap: —")
-        reasons = "\n".join(result.reasons) if result and result.reasons else "+X right · +Y down\nDisplacement is reference → current."
-        if self.reasons.toPlainText() != reasons:
-            self.reasons.setPlainText(reasons)
+        if result is None or not result.usable:
+            self._readout_samples.clear()
+            self._readout_key = None
+        elif pair.key != self._readout_key:
+            # Count each measured frame once, even when the UI refreshes more often.
+            if self._readout_key is None or pair.key[0::2] != self._readout_key[0::2]:
+                self._readout_samples.clear()
+            now = time.monotonic()
+            while self._readout_samples and now - self._readout_samples[0][0] > _READOUT_WINDOW_S:
+                self._readout_samples.popleft()
+            self._readout_samples.append((now, result.dx, result.dy))
+            self._readout_key = pair.key
+        if finite:
+            dx, dy = result.dx, result.dy
+            if self._readout_samples:
+                count = len(self._readout_samples)
+                dx = sum(sample[1] for sample in self._readout_samples) / count
+                dy = sum(sample[2] for sample in self._readout_samples) / count
+            # The z format option avoids a flickering minus sign on rounded zero.
+            self.x_value.setText(f"X   {dx:+z.1f} px")
+            self.y_value.setText(f"Y   {dy:+z.1f} px")
+        else:
+            self.x_value.setText("X   — px")
+            self.y_value.setText("Y   — px")
 
     def _render(self):
         if self._paused or self.latest_frame is None:
@@ -953,13 +1009,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._schedule_analytics()
         pair = self.last_pair
         camera_fps = worker.rate.value if worker and worker.is_alive() else 0
-        age = (time.monotonic() - pair.frame.received_at) * 1000 if pair else None
         processing = pair.result.timings.get("total_ms", 0) if pair else 0
-        age_text = f"{age:.0f} ms" if age is not None else "—"
         measurement_fps = 0 if self._paused else self.measurement.rate.value
-        self.performance_label.setText(f"Camera FPS {camera_fps:.1f}   Measurement FPS {measurement_fps:.1f}   Measurement age {age_text}   Processing {processing:.1f} ms   Scale {self.config.scale:g}   Analytics {'busy' if self.analytics.busy else self.dock.mode.currentText().lower()}")
-        self._update_readout()
+        for title, value in (("Camera FPS", f"{camera_fps:.1f}"), ("Measurement FPS", f"{measurement_fps:.1f}"),
+                             ("Processing", f"{processing:.1f} ms"), ("Scale", f"{self.config.scale:g}"),
+                             ("Analytics", "busy" if self.analytics.busy else self.dock.mode.currentText().lower())):
+            self.performance_labels[title].setText(f"{title} {value}")
         self._poll_motion()
+        self._update_readout()
         self.retired_captures = [thread for thread in self.retired_captures if thread.is_alive()]
         if self._pending_start and not self.retired_captures:
             request, self._pending_start = self._pending_start, None
@@ -1050,8 +1107,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dock.rate.setValue(hz)
         self._profile_camera = dict(camera)
         self._remembered_camera = dict(camera)
-        self.axis_keyboard.clear()
-        self.motion.disconnect_hardware()
+        self._connect_motion(False)
         self.motion_dock.set_config(motion_config)
         self._motion_config_changed(motion_config)
         if self.capture_worker:
@@ -1081,7 +1137,7 @@ class MainWindow(QtWidgets.QMainWindow):
                                  (self.dock, "analytics_visible")):
                 value = ui.get(key)
                 if type(value) is bool:
-                    if isinstance(control, QtWidgets.QCheckBox):
+                    if isinstance(control, (QtWidgets.QCheckBox, QtGui.QAction)):
                         control.setChecked(value)
                     else:
                         control.setVisible(value)
@@ -1090,7 +1146,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 for page, enabled in zip(self.dock.pages.values(), pages):
                     if type(enabled) is bool:
                         page.enabled.setChecked(enabled)
-            self.notice.setText("Previous settings restored. Connect hardware when ready.")
+            self.notice.setText("Previous settings restored. Connecting hardware automatically.")
         except Exception as exc:
             self.notice.setText(f"Could not restore previous settings: {exc}")
 
@@ -1112,7 +1168,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self._apply_settings_profile(load_profile(path, include_motion=True))
             self._schedule_settings_save()
-            self.notice.setText("Settings loaded. Apply camera settings as needed; click Connect hardware to enable axis control.")
+            self.notice.setText("Settings loaded. Apply camera settings as needed; toggle Connect hardware on to enable axis control.")
         except Exception as exc:
             self._error(exc)
 

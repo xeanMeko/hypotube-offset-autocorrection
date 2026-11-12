@@ -156,7 +156,7 @@ def test_geometry_change_discards_reference_and_visible_old_measurement(window, 
     assert window.reference_pane.array is None
     assert window.config.region.kind == "full"
     assert "—" in window.x_value.text()
-    assert "—" in window.distance_value.text()
+    assert "—" in window.y_value.text()
     assert "geometry changed" in window.notice.text().lower()
 
 
