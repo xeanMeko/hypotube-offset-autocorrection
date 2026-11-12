@@ -612,13 +612,13 @@ class MotionController:
             return
         self._confirmations = 0
         if self._previous_error is not None:
-            allowance = max(.25, self.context.tolerance_px * .1)
+            allowance = max(1.0, self.context.tolerance_px * .1)
             if error > self._previous_error + allowance:
                 self.cancel("X error increased; check motor direction and pixel calibration")
                 return
             self._no_progress = self._no_progress + 1 if self._previous_error - error < max(.05, self.context.tolerance_px * .1) else 0
-            if self._no_progress >= 10:
-                self.cancel("X alignment stopped after 10 moves without progress")
+            if self._no_progress >= 5:
+                self.cancel("X alignment stopped after 5 moves without progress")
                 return
         if self._corrections >= self.MAX_CORRECTIONS:
             self.cancel("X alignment reached its 100 correction limit")
