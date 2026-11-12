@@ -2,6 +2,7 @@
 from dataclasses import replace
 import os
 import time
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,7 +12,7 @@ import numpy as np
 from PySide6 import QtWidgets, QtCore, QtGui, QtTest
 
 from measure_shift.app import MainWindow
-from measure_shift.motion import MotionConfig
+from measure_shift.motion import MotionConfig, MotionStatus, ReferenceCaptureRequest
 from measure_shift.motion_hardware import HardwareState
 from measure_shift.motion_widgets import AxisKeyboardFilter, MotionDock
 from measure_shift.models import FramePacket
@@ -40,12 +41,13 @@ class FakeHardware:
         self.state = HardwareState(motor_current_ma=800)
         self.moves = []
         self.calls = []
+        self.inputs = (False, False, False, False)
 
     def connect(self, *args):
         self.calls.append("connect")
 
     def read_inputs(self):
-        return False, False, False, False
+        return self.inputs
 
     def read_state(self):
         return self.state
@@ -211,6 +213,91 @@ def test_unit_switch_preserves_driver_distance_and_speed(application):
     assert dock.config.distance_steps() == 40
     assert dock.config.speed_steps() == 400
     dock.close()
+
+
+def test_reference_channel_selector_supports_all_channels_and_disabled(application):
+    dock = MotionDock()
+    changes = []
+    dock.config_changed.connect(lambda config: changes.append(config.reference_channel))
+    assert dock.reference_channel.currentData() is None
+    for channel in (*range(4), None):
+        dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(channel))
+        assert dock.config.reference_channel == channel
+    assert changes == [0, 1, 2, 3, None]
+    dock.close()
+
+
+def test_digital_input_captures_reference_through_worker_and_gui(axis_window, application):
+    window, hardware = axis_window
+    frame = FramePacket.from_array(np.full((32, 48), 80, np.uint8), "Trigger test")
+    window.frames.publish(frame)
+    pump(application, lambda: window.latest_frame is frame, timeout=2, required=True)
+    window.motion_dock.reference_channel.setCurrentIndex(window.motion_dock.reference_channel.findData(0))
+    pump(application, lambda: window._motion_status.config_revision == window._motion_config_revision,
+         timeout=2, required=True)
+    assert window.reference is None
+    hardware.inputs = (True, False, False, False)
+    pump(application, lambda: window.reference is not None, timeout=2, required=True)
+    assert window.reference.frame.frame_id == frame.frame_id
+    reference_id = window.reference.reference_id
+    window.capture_reference()
+    assert window.reference.reference_id != reference_id
+    reference_id = window.reference.reference_id
+    pump(application, timeout=.1)
+    hardware.inputs = (False, False, False, False)
+    pump(application, lambda: not window._motion_status.inputs4[0], timeout=.3, required=True)
+    hardware.inputs = (True, False, False, False)
+    pump(application, lambda: window._motion_status.inputs4[0], timeout=.3, required=True)
+    assert window.reference.reference_id == reference_id
+    pump(application, timeout=1.05)
+    assert window.reference.reference_id == reference_id
+    hardware.inputs = (False, False, False, False)
+    pump(application, lambda: not window._motion_status.inputs4[0], timeout=.3, required=True)
+    hardware.inputs = (True, False, False, False)
+    pump(application, lambda: window.reference.reference_id != reference_id, timeout=2, required=True)
+    assert hardware.moves == []
+
+
+def test_gui_limits_delayed_digital_captures_and_discards_stale_requests(application, monkeypatch):
+    import measure_shift.app as app_module
+
+    window = MainWindow(motion_hardware=FakeHardware())
+    window.timer.stop()
+    window.motion.stop_worker()
+    window.motion.join(timeout=2)
+    now = [10.]
+    monkeypatch.setattr(app_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    captures = []
+    monkeypatch.setattr(window, "capture_reference", lambda: captures.append(now[0]))
+    config = MotionConfig(reference_channel=0)
+    window.motion_dock.set_config(config)
+    status = MotionStatus(connected=True, config=config)
+
+    def publish(triggered_at, **kwargs):
+        request = ReferenceCaptureRequest(0, triggered_at, 0)
+        window.motion.output.publish(replace(status, reference_capture=request, **kwargs))
+        window._poll_motion()
+
+    try:
+        publish(1.)
+        assert captures == [10.]
+        now[0] = 10.2
+        publish(2.)  # Input edges were a second apart; GUI handling is closer.
+        assert captures == [10.]
+        now[0] = 11.
+        window._poll_motion()  # A suppressed request must not be replayed.
+        assert captures == [10.]
+        publish(3.)
+        assert captures == [10., 11.]
+        now[0] = 12.
+        publish(4., connected=False)
+        assert captures == [10., 11.]
+        window._motion_config_revision = 1
+        publish(5.)  # An edge from the previous channel configuration is stale.
+        assert captures == [10., 11.]
+    finally:
+        window.close()
+        application.processEvents()
 
 
 def test_default_calibration_move_uses_100_steps(application):

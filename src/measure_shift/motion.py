@@ -17,6 +17,9 @@ from .motion_hardware import HardwareState, TinkerforgeMotionHardware
 from .workers import LatestValue
 
 
+REFERENCE_CAPTURE_INTERVAL_S = 1.0
+
+
 @dataclass(frozen=True)
 class MotionConfig:
     host: str = "localhost"
@@ -25,6 +28,7 @@ class MotionConfig:
     digital_uid: str = "27s4"
     left_channel: int = 2
     right_channel: int = 1
+    reference_channel: int | None = None
     active_high: bool = True
     invert_direction: bool = True
     motor_current_ma: int | None = 800
@@ -51,6 +55,8 @@ class MotionConfig:
             raise ValueError("Joystick channels must be between 0 and 3")
         if self.left_channel == self.right_channel:
             raise ValueError("Left and right must use different digital inputs")
+        if self.reference_channel is not None and (type(self.reference_channel) is not int or self.reference_channel not in range(4)):
+            raise ValueError("Reference capture channel must be disabled or between 0 and 3")
         if any(type(v) is not bool for v in (self.active_high, self.invert_direction, self.interpolation)):
             raise ValueError("Input polarity, direction and interpolation must be booleans")
         if self.motor_current_ma is not None and (type(self.motor_current_ma) is not int or not 360 <= self.motor_current_ma <= 1640):
@@ -190,6 +196,13 @@ class MotionAction:
 
 
 @dataclass(frozen=True)
+class ReferenceCaptureRequest:
+    channel: int
+    triggered_at: float
+    config_revision: int
+
+
+@dataclass(frozen=True)
 class MotionStatus:
     connected: bool = False
     setup_applied: bool = False
@@ -210,6 +223,7 @@ class MotionStatus:
     dx: float | None = None
     config: MotionConfig = MotionConfig()
     config_revision: int = 0
+    reference_capture: ReferenceCaptureRequest | None = None
 
 
 class MotionController:
@@ -219,6 +233,7 @@ class MotionController:
     SETTLE_S = .20
     MAX_OPERATION_S = 60.0
     MAX_CORRECTIONS = 100
+    FEEDBACK_RETRY_S = 3.0
     UNCERTAIN_ALIGNMENT_MIN_OFFSET_PX = 10.0
 
     def __init__(self, config: MotionConfig | None = None):
@@ -232,6 +247,9 @@ class MotionController:
         self.message = "Connect motion hardware to begin"
         self.state = HardwareState()
         self.inputs4 = (False, False, False, False)
+        self.reference_capture: ReferenceCaptureRequest | None = None
+        self._reference_level: bool | None = None
+        self._last_reference_capture_at: float | None = None
         self.keyboard = (False, False)
         self._saw_conflict = False
         self._manual_activity = False
@@ -251,6 +269,7 @@ class MotionController:
         self._required_generation: int | None = None
         self._last_consumed_frame: str | None = None
         self._feedback: MotionFeedback | None = None
+        self._feedback_retry_started_at: float | None = None
         self._calibration_start = (0.0, 0)
         self._calibration_end_position = 0
         self._calibration_steps = 0
@@ -273,6 +292,9 @@ class MotionController:
                             ("motor_current_ma", "step_resolution", "interpolation"))
         controls_changed = any(getattr(old, name) != getattr(config, name) for name in
                                ("left_channel", "right_channel", "active_high", "invert_direction"))
+        if config.reference_channel != old.reference_channel:
+            self._reference_level = None
+            self.reference_capture = None
         self.config = config
         self.config_revision = revision
         if setup_changed:
@@ -327,6 +349,8 @@ class MotionController:
 
     def on_connected(self, state: HardwareState) -> None:
         self.connected = True
+        self._reference_level = None
+        self.reference_capture = None
         self.state = state
         self.setup_applied = False
         self.armed = False
@@ -341,6 +365,8 @@ class MotionController:
 
     def on_disconnected(self, message="Motion hardware disconnected") -> None:
         self.connected = self.setup_applied = self.armed = False
+        self._reference_level = None
+        self.reference_capture = None
         self._operation = self._pending_operation = self._move = None
         self._actions.clear()
         self._stopping = False
@@ -400,6 +426,7 @@ class MotionController:
 
     def cancel(self, message="Motion stopped; click Enable motor to continue", *, disarm=True):
         self._operation = self._pending_operation = None
+        self._feedback_retry_started_at = None
         self._confirmations = 0
         self._neutral_required = True
         self._direction = 0
@@ -455,6 +482,7 @@ class MotionController:
             return
         self._operation, self._stage = kind, "baseline"
         self._op_started = now
+        self._feedback_retry_started_at = None
         self._calibration_steps = steps
         self._corrections = self._confirmations = self._no_progress = 0
         self._previous_error = None
@@ -474,29 +502,43 @@ class MotionController:
         return (self._operation == "align" and feedback.validity == "uncertain"
                 and max(abs(feedback.dx), abs(feedback.dy)) > threshold)
 
+    def _retry_operation_feedback(self, now, reason):
+        # Count elapsed time, not controller ticks or repeated reads of one
+        # frame. New bad frames and post-move freshness barriers must not
+        # extend this recovery window.
+        if self._feedback_retry_started_at is None:
+            self._feedback_retry_started_at = now
+        self._confirmations = 0
+        if now - self._feedback_retry_started_at >= self.FEEDBACK_RETRY_S:
+            self.cancel(f"{reason}; no usable camera feedback within {self.FEEDBACK_RETRY_S:g} seconds")
+        else:
+            self.message = f"{reason}; retrying camera feedback"
+
     def _consume_operation_feedback(self, now):
         feedback = self._feedback
         if (feedback is None or self._required_generation is None or
                 feedback.freshness_generation < self._required_generation or
                 feedback.read_started_at is None or feedback.read_started_at < self._fresh_cutoff or
-                feedback.received_at < self._fresh_cutoff):
-            if now > self._fresh_cutoff + max(3.0, self.context.max_feedback_age_s):
+                feedback.received_at < self._fresh_cutoff or
+                feedback.reference_id != self.context.reference_id or feedback.config_id != self.context.config_id):
+            if self._feedback_retry_started_at is not None:
+                self._retry_operation_feedback(now, "Fresh camera measurement is unavailable")
+            elif now > self._fresh_cutoff + max(3.0, self.context.max_feedback_age_s):
                 self.cancel("Fresh camera measurement timed out")
-            return None
-        if feedback.reference_id != self.context.reference_id or feedback.config_id != self.context.config_id:
             return None
         if not self._feedback_usable(feedback):
             if (self._operation == "align" and feedback.validity == "uncertain"
                     and math.isfinite(feedback.dx) and math.isfinite(feedback.dy)):
-                self.cancel("Camera match is uncertain at low offset; a valid match is required")
+                self._retry_operation_feedback(now, "Camera match is uncertain at low offset; a valid match is required")
             else:
-                self.cancel("Camera match is invalid or uncertain")
+                self._retry_operation_feedback(now, "Camera match is invalid or uncertain")
             return None
         if now - feedback.received_at > self.context.max_feedback_age_s:
-            self.cancel("Camera measurement is stale")
+            self._retry_operation_feedback(now, "Camera measurement is stale")
             return None
         if feedback.frame_id == self._last_consumed_frame:
             return None
+        self._feedback_retry_started_at = None
         self._last_consumed_frame = feedback.frame_id
         return feedback
 
@@ -508,9 +550,14 @@ class MotionController:
             return
         if self._move:
             feedback = self._feedback
-            if feedback and feedback.received_at >= self._op_started:
-                if not self._feedback_usable(feedback) or now - feedback.received_at > self.context.max_feedback_age_s:
-                    self.cancel("Camera feedback became invalid, uncertain at low offset, or stale during movement")
+            if (feedback is None or feedback.received_at < self._op_started or
+                    feedback.reference_id != self.context.reference_id or feedback.config_id != self.context.config_id or
+                    not self._feedback_usable(feedback) or now - feedback.received_at > self.context.max_feedback_age_s):
+                self._retry_operation_feedback(now, "Camera feedback became invalid, uncertain at low offset, or stale during movement")
+            else:
+                if self._feedback_retry_started_at is not None:
+                    self.message = "Camera feedback recovered; continuing current move"
+                self._feedback_retry_started_at = None
             return
         feedback = self._consume_operation_feedback(now)
         if feedback is None or not self._operation:
@@ -586,6 +633,20 @@ class MotionController:
         self.message = f"Aligning X · correction {self._corrections}{quality}"
         self._start_move(steps, now, "align")
 
+    def _read_reference_input(self, now: float) -> None:
+        channel = self.config.reference_channel
+        if channel is None:
+            return
+        level = self.inputs4[channel]
+        rising = self._reference_level is False and level
+        # Always consume the transition, including during cooldown. Holding
+        # HIGH must never replay a suppressed edge when the second expires.
+        self._reference_level = level
+        if rising and (self._last_reference_capture_at is None or
+                       now - self._last_reference_capture_at >= REFERENCE_CAPTURE_INTERVAL_S):
+            self._last_reference_capture_at = now
+            self.reference_capture = ReferenceCaptureRequest(channel, now, self.config_revision)
+
     def tick(self, now: float, hardware_state: HardwareState | None = None,
              inputs: tuple[bool, bool, bool, bool] | None = None,
              feedback: MotionFeedback | None = None) -> tuple[MotionAction, ...]:
@@ -609,6 +670,8 @@ class MotionController:
         if not self.connected:
             self._actions.clear()
             return ()
+        if inputs is not None:
+            self._read_reference_input(now)
         if self.state.fault and (self.armed or self._move or self._operation):
             self.cancel(f"Motor fault: {self.state.fault}")
         if self.setup_applied and self.state.step_resolution != self.config.step_resolution:
@@ -681,7 +744,7 @@ class MotionController:
                             self.config.pixels_per_step, self.config.calibration_source_id,
                             self.config.calibration_shape, self._corrections,
                             self._feedback.dx if self._feedback and math.isfinite(self._feedback.dx) else None,
-                            self.config, self.config_revision)
+                            self.config, self.config_revision, self.reference_capture)
 
 
 class MotionWorker(threading.Thread):

@@ -54,6 +54,15 @@ class ImagePane(QtWidgets.QWidget):
         self.roi = None
         self._region = None
         self._auto_done = False
+        self._crosshair_visible = False
+        self.crosshair_horizontal = pg.PlotCurveItem(pen=pg.mkPen("#66d9ef", width=1, cosmetic=True))
+        self.crosshair_vertical = pg.PlotCurveItem(pen=pg.mkPen("#66d9ef", width=1, cosmetic=True))
+        for line in (self.crosshair_horizontal, self.crosshair_vertical):
+            line.setZValue(1)
+            line.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
+            line.setAcceptHoverEvents(False)
+            self.plot.addItem(line, ignoreBounds=True)
+            line.hide()
         self._mouse = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=20, slot=self._hover)
         self.arrow_line = pg.PlotDataItem(pen=pg.mkPen("#ffcd66", width=2))
         self.arrow = pg.ArrowItem(angle=0, headLen=14, tailLen=0, brush="#ffcd66", pen="#ffcd66")
@@ -85,10 +94,30 @@ class ImagePane(QtWidgets.QWidget):
             levels = (0, 1)
         self.image.setLookupTable(pg.colormap.get("viridis").getLookupTable(nPts=256) if color and array.ndim == 2 else None)
         self.image.setImage(display, autoLevels=False, levels=levels)
+        if previous_shape != array.shape:
+            self._update_crosshair()
         if auto or not self._auto_done or previous_shape != array.shape:
             h, w = array.shape[:2]
             self.view.setRange(rect=QtCore.QRectF(0, 0, w, h), padding=.03)
             self._auto_done = True
+
+    def clear_image(self) -> None:
+        self.array = None
+        self.image.clear()
+        self._update_crosshair()
+
+    def set_crosshair_visible(self, visible: bool) -> None:
+        self._crosshair_visible = visible
+        self._update_crosshair()
+
+    def _update_crosshair(self) -> None:
+        visible = self._crosshair_visible and self.array is not None
+        if visible:
+            h, w = self.array.shape[:2]
+            self.crosshair_horizontal.setData([0, w], [h / 2, h / 2])
+            self.crosshair_vertical.setData([w / 2, w / 2], [0, h])
+        self.crosshair_horizontal.setVisible(visible)
+        self.crosshair_vertical.setVisible(visible)
 
     def _hover(self, args) -> None:
         if self.array is None:
@@ -234,8 +263,7 @@ class AnalysisPage(QtWidgets.QWidget):
         self.profile = None
         for view in self.views.values():
             if isinstance(view, ImagePane):
-                view.array = None
-                view.image.clear()
+                view.clear_image()
             elif isinstance(view, tuple):
                 view[1].setData([], [])
         self.views = {}

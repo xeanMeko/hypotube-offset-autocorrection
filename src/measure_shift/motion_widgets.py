@@ -129,6 +129,19 @@ class MotionDock(QtWidgets.QDockWidget):
         form.addRow("Raw inputs", self.inputs)
         layout.addWidget(inputs)
 
+        reference = QtWidgets.QGroupBox("Digital reference capture")
+        form = QtWidgets.QFormLayout(reference)
+        self.reference_channel = QtWidgets.QComboBox()
+        self.reference_channel.addItem("Disabled", None)
+        for channel in range(4):
+            self.reference_channel.addItem(f"Channel {channel}", channel)
+        self.reference_channel.setToolTip("Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
+        form.addRow("Reference capture channel", self.reference_channel)
+        hint = QtWidgets.QLabel("LOW → HIGH · maximum 1 capture / second")
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        layout.addWidget(reference)
+
         motor = QtWidgets.QGroupBox("Motor setup")
         form = QtWidgets.QFormLayout(motor)
         self.device_settings = QtWidgets.QLabel("Connect to read motor settings")
@@ -208,7 +221,7 @@ class MotionDock(QtWidgets.QDockWidget):
             control.editingFinished.connect(self._edited)
         for control in (self.port, self.distance, self.speed, self.frequency):
             control.valueChanged.connect(self._edited)
-        for control in (self.left_channel, self.right_channel, self.resolution):
+        for control in (self.left_channel, self.right_channel, self.reference_channel, self.resolution):
             control.currentIndexChanged.connect(self._edited)
         for control in (self.active_high, self.invert_direction, self.interpolation):
             control.toggled.connect(self._edited)
@@ -244,6 +257,7 @@ class MotionDock(QtWidgets.QDockWidget):
             self.port.setValue(config.port)
             self.left_channel.setCurrentIndex(config.left_channel)
             self.right_channel.setCurrentIndex(config.right_channel)
+            self.reference_channel.setCurrentIndex(self.reference_channel.findData(config.reference_channel))
             self.active_high.setChecked(config.active_high)
             self.invert_direction.setChecked(config.invert_direction)
             self.motor_current.setValue(config.motor_current_ma or 0)
@@ -302,6 +316,7 @@ class MotionDock(QtWidgets.QDockWidget):
             config = replace(old, host=self.host.text().strip(), port=self.port.value(),
                              stepper_uid=self.stepper_uid.text().strip(), digital_uid=self.digital_uid.text().strip(),
                              left_channel=self.left_channel.currentData(), right_channel=self.right_channel.currentData(),
+                             reference_channel=self.reference_channel.currentData(),
                              active_high=self.active_high.isChecked(), invert_direction=self.invert_direction.isChecked(),
                              motor_current_ma=self.motor_current.value() or None, step_resolution=self.resolution.currentData(),
                              interpolation=self.interpolation.isChecked(), jog_unit=self.unit.currentData(),

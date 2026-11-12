@@ -52,6 +52,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock = window.motion_dock
         dock.left_channel.setCurrentIndex(0)
         dock.right_channel.setCurrentIndex(3)
+        dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(1))
         dock.active_high.setChecked(False)
         dock.invert_direction.setChecked(False)
         dock.motor_current.setValue(900)
@@ -78,6 +79,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
                    json.loads(path.read_text())["motion"]["repeat_hz"] == 4)
         config, tolerance, hz, camera, motion = load_profile(path, include_motion=True)
         assert motion["left_channel"] == 0 and motion["right_channel"] == 3
+        assert motion["reference_channel"] == 1
         assert motion["motor_current_ma"] == 900 and motion["step_resolution"] == 16
         assert config.scale == .5 and tolerance == 2.5 and hz == 3
         assert camera == {"fps": 21, "exposure_ms": 5.5}
@@ -91,6 +93,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         pump_until(application, lambda: restored.motion.controller.config_revision > 0)
         dock = restored.motion_dock
         assert dock.config.left_channel == 0 and dock.config.right_channel == 3
+        assert dock.config.reference_channel == 1 and dock.reference_channel.currentData() == 1
         assert not dock.config.active_high and not dock.config.invert_direction
         assert dock.config.motor_current_ma == 900 and dock.config.step_resolution == 16
         assert (dock.config.jog_distance, dock.config.jog_speed, dock.config.repeat_hz) == (7, 125, 4)

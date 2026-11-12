@@ -47,6 +47,9 @@ def pixel_config(**kwargs):
 @pytest.mark.parametrize("field,value", [("repeat_hz", 0), ("repeat_hz", 11), ("jog_distance", math.nan),
                                           ("jog_distance", .6), ("jog_speed", .6),
                                           ("jog_speed", math.inf), ("left_channel", 4),
+                                          ("reference_channel", -1), ("reference_channel", 4),
+                                          ("reference_channel", True), ("reference_channel", "0"),
+                                          ("reference_channel", 1.0),
                                           ("motor_current_ma", 100), ("step_resolution", 3),
                                           ("jog_unit", "mm"), ("pixels_per_step", 0)])
 def test_invalid_configuration_is_rejected(field, value):
@@ -55,13 +58,103 @@ def test_invalid_configuration_is_rejected(field, value):
 
 
 def test_configuration_roundtrip_and_pixel_unit_conversion():
-    config = pixel_config(jog_unit="pixels", jog_distance=5, jog_speed=40)
+    config = pixel_config(jog_unit="pixels", jog_distance=5, jog_speed=40, reference_channel=3)
     config = replace(config, pixels_per_step=-2)
     assert config.distance_steps() == 2
     assert config.speed_steps() == 20
     assert MotionConfig.from_dict(config.to_dict()) == config
     with pytest.raises(ValueError, match="at least one"):
         replace(config, jog_distance=.1).validated()
+
+
+@pytest.mark.parametrize("channel", range(4))
+@pytest.mark.parametrize("active_high", [False, True])
+def test_reference_capture_uses_raw_rising_edges_without_enabling_motion(channel, active_high):
+    controller = MotionController(MotionConfig(reference_channel=channel, active_high=active_high))
+    controller.on_connected(state())
+    high = tuple(index == channel for index in range(4))
+    low = (False, False, False, False)
+    # Connecting while HIGH establishes the baseline without capturing.
+    controller.tick(0, inputs=high)
+    assert controller.snapshot().reference_capture is None
+    controller.tick(.1, inputs=low)
+    controller.tick(.2, inputs=high)
+    first = controller.snapshot().reference_capture
+    assert first.channel == channel and first.triggered_at == .2
+    assert not controller.armed
+    controller.tick(2.2, inputs=high)
+    assert controller.snapshot().reference_capture == first
+    controller.tick(2.3, inputs=low)
+    assert controller.snapshot().reference_capture == first
+    controller.tick(2.4, inputs=high)
+    assert controller.snapshot().reference_capture.triggered_at == 2.4
+
+
+def test_reference_capture_cooldown_discards_edges_without_replaying_held_high():
+    controller = MotionController(MotionConfig(reference_channel=0))
+    controller.on_connected(state())
+    low = (False, False, False, False)
+    high = (True, False, False, False)
+    controller.tick(0, inputs=low)
+    controller.tick(1, inputs=high)
+    first = controller.snapshot().reference_capture
+    controller.tick(1.1, inputs=low)
+    controller.tick(1.999, inputs=high)
+    assert controller.snapshot().reference_capture == first
+    controller.tick(2, inputs=high)
+    controller.tick(3, inputs=high)
+    assert controller.snapshot().reference_capture == first
+    controller.tick(3.1, inputs=low)
+    controller.tick(3.2, inputs=high)
+    assert controller.snapshot().reference_capture.triggered_at == 3.2
+    controller.tick(4.1, inputs=low)
+    controller.tick(4.2, inputs=high)
+    assert controller.snapshot().reference_capture.triggered_at == 4.2
+
+
+def test_reference_capture_disabled_and_other_channels_do_not_trigger():
+    controller = MotionController()
+    controller.on_connected(state())
+    for now, inputs in enumerate(((False,) * 4, (True,) * 4) * 2):
+        controller.tick(now, inputs=inputs)
+        assert controller.snapshot().reference_capture is None
+    assert MotionConfig.from_dict({}).reference_channel is None
+    controller.configure(replace(controller.config, reference_channel=3), 1)
+    controller.tick(4, inputs=(False,) * 4)
+    controller.tick(5, inputs=(True, True, True, False))
+    assert controller.snapshot().reference_capture is None
+    controller.tick(6, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture.channel == 3
+    assert controller.snapshot().reference_capture.config_revision == 1
+
+
+def test_reference_channel_changes_and_reconnects_reset_baseline_but_keep_cooldown():
+    controller = MotionController(MotionConfig(reference_channel=0))
+    controller.on_connected(state())
+    controller.tick(0, inputs=(False,) * 4)
+    controller.tick(1, inputs=(True, False, False, False))
+    assert controller.snapshot().reference_capture is not None
+    controller.configure(replace(controller.config, reference_channel=3), 1)
+    controller.tick(1.1, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture is None
+    controller.tick(1.2, inputs=(False,) * 4)
+    controller.tick(1.3, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture is None
+    controller.on_disconnected()
+    controller.tick(1.4, inputs=(False,) * 4)
+    controller.on_connected(state())
+    controller.tick(1.5, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture is None
+    controller.tick(1.6, inputs=(False,) * 4)
+    controller.tick(1.7, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture is None
+    controller.tick(1.9, inputs=(False,) * 4)
+    controller.tick(2, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture.triggered_at == 2
+    controller.configure(replace(controller.config, reference_channel=None), 2)
+    controller.tick(3, inputs=(False,) * 4)
+    controller.tick(4, inputs=(True,) * 4)
+    assert controller.snapshot().reference_capture is None
 
 
 def test_legacy_mm_profile_converts_to_driver_steps():
@@ -385,14 +478,17 @@ def test_replay_and_demo_sources_cannot_drive_auto_alignment(kind):
 
 
 @pytest.mark.parametrize("dx,usable,received,message", [(2, False, 1.21, "invalid"), (2, True, 1.21, "stale")])
-def test_invalid_or_stale_measurements_stop_alignment(dx, usable, received, message):
+def test_invalid_or_stale_measurements_retry_before_stopping_alignment(dx, usable, received, message):
     controller = ready(pixel_config())
     controller.request_align()
     controller.tick(1)
     controller.acknowledge_freshness(1)
     now = 2.4 if message == "stale" else 1.3
-    assert not moves(controller.tick(now, feedback=feedback("bad", dx, received, usable=usable)))
+    actions = controller.tick(now, feedback=feedback("bad", dx, received, usable=usable))
+    assert not moves(actions) and not any(action.kind == "stop" for action in actions)
     assert message in controller.message
+    assert controller.armed and controller._operation == "align"
+    controller.tick(now + 3)
     assert not controller.armed
 
 
@@ -418,6 +514,9 @@ def test_uncertain_low_offset_blocks_alignment(dx, dy):
     actions = controller.tick(1.3, feedback=feedback(
         "near", dx, 1.21, dy=dy, usable=False, validity="uncertain"))
     assert not moves(actions)
+    assert not any(action.kind == "stop" for action in actions)
+    assert controller.armed and controller._operation == "align"
+    actions = controller.tick(4.3)
     assert any(action.kind == "stop" for action in actions)
     assert not controller.armed and controller._operation is None
     assert "uncertain at low offset" in controller.message
@@ -432,6 +531,8 @@ def test_invalid_or_nonfinite_large_offsets_still_block_alignment(dx, dy):
     validity = "invalid" if math.isfinite(dx) and math.isfinite(dy) else "uncertain"
     assert not moves(controller.tick(1.3, feedback=feedback(
         "bad", dx, 1.21, dy=dy, usable=False, validity=validity)))
+    assert controller.armed
+    controller.tick(4.3)
     assert not controller.armed
 
 
@@ -442,10 +543,12 @@ def test_uncertain_offset_must_also_exceed_tolerance():
     controller.acknowledge_freshness(1)
     assert not moves(controller.tick(1.3, feedback=feedback(
         "near", 15, 1.21, usable=False, validity="uncertain")))
+    assert controller.armed
+    controller.tick(4.3)
     assert not controller.armed
 
 
-def test_uncertain_coarse_alignment_stops_when_offsets_become_small():
+def test_uncertain_coarse_alignment_waits_for_valid_match_when_offsets_become_small():
     controller = ready(pixel_config(jog_distance=2))
     controller.request_align()
     controller.tick(1)
@@ -456,8 +559,9 @@ def test_uncertain_coarse_alignment_stops_when_offsets_become_small():
     controller.acknowledge_freshness(2)
     actions = controller.tick(1.7, state(-2), feedback=feedback(
         "near", 9, 1.61, generation=2, usable=False, validity="uncertain"))
-    assert not moves(actions) and not controller.armed
+    assert not moves(actions) and controller.armed
     assert "uncertain at low offset" in controller.message
+    assert moves(controller.tick(1.8, state(-2), feedback=feedback("valid", 9, 1.79, generation=2)))
 
 
 @pytest.mark.parametrize("dx,dy,allowed", [(11, 0, True), (3, 11, True), (3, 0, False)])
@@ -469,8 +573,119 @@ def test_uncertain_policy_also_applies_during_motor_movement(dx, dy, allowed):
     assert moves(controller.tick(1.3, feedback=feedback("base", 12, 1.21)))
     actions = controller.tick(1.4, state(-1, velocity=200, remaining=1), feedback=feedback(
         "moving", dx, 1.35, dy=dy, usable=False, validity="uncertain"))
+    assert controller.armed
+    assert not any(action.kind == "stop" for action in actions)
+    actions = controller.tick(4.4, state(-1, velocity=200, remaining=1), feedback=feedback(
+        "later", dx, 4.35, dy=dy, usable=False, validity="uncertain"))
     assert controller.armed == allowed
     assert any(action.kind == "stop" for action in actions) == (not allowed)
+
+
+@pytest.mark.parametrize("operation", ["align", "calibration"])
+@pytest.mark.parametrize("problem", ["invalid", "uncertain", "nonfinite", "stale"])
+def test_transient_feedback_failure_during_movement_recovers(operation, problem):
+    controller = ready(pixel_config(jog_distance=2))
+    if operation == "align":
+        controller.request_align()
+    else:
+        controller.request_calibration(2)
+    controller.tick(1)
+    controller.acknowledge_freshness(1)
+    assert moves(controller.tick(1.3, feedback=feedback("base", 12, 1.21)))
+    moving = state(velocity=200, remaining=1)
+    bad = feedback("bad", math.nan if problem == "nonfinite" else 2,
+                   1.21 if problem == "stale" else 2.39,
+                   usable=problem == "stale", validity=problem)
+    actions = controller.tick(2.4, moving, feedback=bad)
+    assert not moves(actions) and not any(action.kind == "stop" for action in actions)
+    assert controller.armed and "retrying camera feedback" in controller.message
+    actions = controller.tick(2.5, moving, feedback=feedback("recovered", 10, 2.49))
+    assert not actions
+    assert controller.armed and "recovered" in controller.message
+
+    position = -2 if operation == "align" else 2
+    assert [action.kind for action in controller.tick(2.6, state(position))] == ["freshness"]
+    controller.acknowledge_freshness(2)
+    actions = controller.tick(2.9, state(position), feedback=feedback(
+        "after", 10 if operation == "align" else 16, 2.81, generation=2))
+    if operation == "align":
+        assert [action.steps for action in moves(actions)] == [-2]
+    else:
+        assert controller.config.pixels_per_step == 2
+        assert controller._operation is None
+    assert controller.armed
+
+
+def test_repeated_bad_frames_and_motor_stop_do_not_extend_feedback_retry_deadline():
+    controller = ready(pixel_config(jog_distance=2))
+    controller.request_align()
+    controller.tick(1)
+    controller.acknowledge_freshness(1)
+    controller.tick(1.3, feedback=feedback("base", 12, 1.21))
+    moving = state(-1, velocity=200, remaining=1)
+    controller.tick(1.4, moving, feedback=feedback("bad", 2, 1.39, usable=False))
+    for now in (1.41, 1.42, 1.43, 1.44, 1.45):
+        assert not controller.tick(now, moving)
+        assert controller.armed
+    controller.tick(1.6, state(-2))
+    controller.acknowledge_freshness(2)
+    for now in (1.9, 2.5, 3.5, 4.39):
+        assert not controller.tick(now, state(-2), feedback=feedback(
+            str(now), 2, now - .01, generation=2, usable=False))
+        assert controller.armed
+    actions = controller.tick(4.4, state(-2), feedback=feedback(
+        "last", 2, 4.39, generation=2, usable=False))
+    assert any(action.kind == "stop" for action in actions)
+    assert not controller.armed and controller._operation is None
+    assert "3 seconds" in controller.message
+
+
+def test_feedback_retry_deadline_still_applies_while_waiting_for_postmove_freshness():
+    controller = ready(pixel_config(jog_distance=2))
+    controller.request_align()
+    controller.tick(1)
+    controller.acknowledge_freshness(1)
+    controller.tick(1.3, feedback=feedback("base", 12, 1.21))
+    controller.tick(1.4, state(-1, velocity=200, remaining=1),
+                    feedback=feedback("bad", 2, 1.39, usable=False))
+    controller.tick(4.2, state(-2))
+    controller.acknowledge_freshness(2)
+    assert controller.armed
+    actions = controller.tick(4.41, state(-2))
+    assert any(action.kind == "stop" for action in actions)
+    assert not controller.armed
+
+
+def test_good_feedback_resets_the_retry_window_during_movement():
+    controller = ready(pixel_config(jog_distance=2))
+    controller.request_align()
+    controller.tick(1)
+    controller.acknowledge_freshness(1)
+    controller.tick(1.3, feedback=feedback("base", 12, 1.21))
+    moving = state(-1, velocity=200, remaining=1)
+    controller.tick(1.4, moving, feedback=feedback("bad1", 2, 1.39, usable=False))
+    controller.tick(2, moving, feedback=feedback("good", 10, 1.99))
+    controller.tick(3, moving, feedback=feedback("bad2", 2, 2.99, usable=False))
+    assert not controller.tick(4.5, moving)
+    assert controller.armed
+    actions = controller.tick(6, moving)
+    assert any(action.kind == "stop" for action in actions)
+    assert not controller.armed
+
+
+def test_retry_requires_three_valid_alignment_confirmations_after_recovery():
+    controller = ready(pixel_config())
+    controller.request_align()
+    controller.tick(1)
+    controller.acknowledge_freshness(1)
+    controller.tick(1.3, feedback=feedback("valid", .2, 1.21))
+    controller.tick(1.4, feedback=feedback("bad", .2, 1.39, usable=False))
+    assert controller.armed and controller._confirmations == 0
+    for index, now in enumerate((1.5, 1.6)):
+        assert not moves(controller.tick(now, feedback=feedback(f"good{index}", .2, now - .01)))
+        assert controller._operation == "align"
+    controller.tick(1.7, feedback=feedback("final", .2, 1.69))
+    assert controller._operation is None and "X aligned" in controller.message
 
 
 def test_uncertain_large_offsets_still_require_fresh_feedback():
@@ -484,6 +699,8 @@ def test_uncertain_large_offsets_still_require_fresh_feedback():
     assert controller.armed
     assert not moves(controller.tick(2.4, feedback=feedback(
         "stale", 100, 1.21, generation=2, usable=False, validity="uncertain")))
+    assert controller.armed and "stale" in controller.message
+    controller.tick(5.4)
     assert not controller.armed and "stale" in controller.message
 
 
@@ -514,6 +731,8 @@ def test_uncertain_large_offset_does_not_allow_pixel_calibration():
     controller.acknowledge_freshness(1)
     assert not moves(controller.tick(1.3, feedback=feedback(
         "coarse", 100, 1.21, usable=False, validity="uncertain")))
+    assert controller.armed and controller.config.pixels_per_step is None
+    controller.tick(4.3)
     assert not controller.armed and controller.config.pixels_per_step is None
 
 

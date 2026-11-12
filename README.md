@@ -101,9 +101,14 @@ have the same dimensions.
    The **compensated preview** applies a software translation and is labeled:
    visual agreement in that preview does not move the physical sample.
 
-Reference and live views support linked zoom and pan. Whole-image matching is the
-default. A draggable rectangular or circular region limits the analysis to a
-feature. A Hann window or circular taper is applied once during preprocessing.
+Reference and live views support linked zoom and pan. Enable **Show center
+crosshair** beneath the **View** selector to draw cyan guides through the image
+center in both views. The guides stay anchored while zooming and panning, and the
+toggle is remembered across restarts.
+
+Whole-image matching is the default. A draggable rectangular or circular region
+limits the analysis to a feature. A Hann window or circular taper is applied once
+during preprocessing.
 Template matching is useful for a distinctive region that moves farther through
 the frame. Optional half/quarter-resolution analysis reduces processing work;
 the reported shift and selected regions remain in native image pixels.
@@ -288,7 +293,8 @@ and enables the motor. Camera-only and Demo use do not require Tinkerforge bindi
    movement disabled. Driver steps refer to the selected microstep size, not
    necessarily full motor steps.
 2. Channel **2** means **left / forward** (positive driver steps) and channel **1**
-   means **right / backward** (negative driver steps); channels **0/3** are unused.
+   means **right / backward** (negative driver steps); channels **0/3** are available
+   for other inputs.
    Watch all four **Raw inputs** while testing your joystick, then
    change the left/right channel selections and **Active high** polarity as
    needed. **Invert motor direction** swaps which motor direction means right.
@@ -308,6 +314,18 @@ and enables the motor. Camera-only and Demo use do not require Tinkerforge bindi
    requests in the same direction share one repeat stream; conflicting directions
    stop movement and require both to return to neutral. After Stop or reconnect,
    return to neutral before pressing again.
+
+Under **Digital reference capture**, set **Reference capture channel** to one of
+channels **0–3** (or **Disabled**, the default). With hardware connected, a raw
+**LOW → HIGH** transition captures the current reference, with at least **one
+second** between digital captures. Holding HIGH does not repeat; edges during
+the cooldown are discarded. Connecting or selecting an already-HIGH input does
+not capture: the input must first be observed LOW. This trigger is independent
+of joystick **Active high** polarity and motor enable state. It uses the same
+capture behavior as **Capture reference**, including the displayed image while
+the view is paused. The channel selection is saved with settings. Inputs are
+sampled by the motion worker, so pulses shorter than its polling interval can
+be missed.
 
 The repeat frequency controls how often a nudge starts; motor speed controls how
 fast each nudge travels. For example, **1 px/nudge**, **10 px/s**, and **2 Hz**
@@ -360,16 +378,20 @@ in pixels. Y and total displacement remain visible; the axis cannot correct Y.
 Demo, image replay, and video replay cannot drive automatic alignment. An uncertain
 match may drive coarse X corrections when either **|X| or |Y| exceeds 10 px and
 the current tolerance**. When both offsets are at or below that threshold, an
-uncertain match stops alignment. This rule applies both between corrections and
-during movement. Invalid or nonfinite estimates remain blocked at any offset;
-pixel calibration still requires valid matches. If X is already within tolerance
+uncertain match pauses further corrections while the controller retries camera
+feedback for up to **3 seconds**. Invalid, nonfinite, and stale feedback use the
+same recovery window, both between corrections and during movement. The current
+finite move may finish, but no new correction uses rejected feedback. A fresh,
+usable measurement resumes the operation; continued failure stops it. Invalid
+or nonfinite estimates remain blocked at any offset; pixel calibration still
+requires valid matches. If X is already within tolerance
 but a large Y offset permits an uncertain match, the controller waits for valid
 measurements before confirming completion. The match quality details below the
 readout identify which check failed. Select a textured region or a distinctive
 rectangular template and check that both images share the same feature.
-Stale feedback, increasing error, three unsuccessful corrections, insufficient
-step resolution, 100 corrections, or 60 seconds stop the attempt with a status
-message. Manual input cancels calibration/alignment and requires neutral before
+Unrecovered feedback loss, increasing error, three unsuccessful corrections,
+insufficient step resolution, 100 corrections, or 60 seconds stop the attempt
+with a status message. Manual input cancels calibration/alignment and requires neutral before
 manual movement resumes. Changing the source, reference, matching or motion
 settings, pausing, disconnecting, or closing also cancels the operation.
 

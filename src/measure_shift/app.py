@@ -18,7 +18,7 @@ from PySide6 import QtCore, QtGui
 import pyqtgraph as pg
 
 from .models import FramePacket, MatchConfig, ReferenceSnapshot, Region, new_id
-from .motion import MotionConfig, MotionContext, MotionWorker
+from .motion import REFERENCE_CAPTURE_INTERVAL_S, MotionConfig, MotionContext, MotionWorker
 from .motion_widgets import AxisKeyboardFilter, MotionDock
 from .sources import create_source, discover_sources, read_gray
 from .storage import export_bundle, export_csv, load_profile, measurement_row, save_profile
@@ -88,6 +88,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._motion_revision = -1
         self._motion_config_revision = 0
         self._motion_status = None
+        self._reference_capture_request = None
+        self._last_digital_reference_at = None
         self.motion = MotionWorker(hardware=motion_hardware, freshness_callback=self._request_motion_frames)
         self._build_ui()
         self.axis_keyboard = AxisKeyboardFilter(self)
@@ -212,6 +214,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode.addItems(["Live", "Red / cyan overlay", "Absolute difference", "Compensated preview", "Compensated difference"])
         form.addRow("View", self.view_mode)
         side.addLayout(form)
+        self.crosshair_toggle = QtWidgets.QCheckBox("Show center crosshair")
+        self.crosshair_toggle.setToolTip("Show fixed guides through the image center in both reference and live views.")
+        side.addWidget(self.crosshair_toggle)
+        self.crosshair_toggle.toggled.connect(self.reference_pane.set_crosshair_visible)
+        self.crosshair_toggle.toggled.connect(self.live_pane.set_crosshair_visible)
         self.tolerance.valueChanged.connect(self._update_readout)
         self.method.currentIndexChanged.connect(self._method_changed)
         self.area.currentIndexChanged.connect(self._area_changed)
@@ -428,6 +435,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.motion_dock.set_config(status.config)
                 self._schedule_settings_save()
         self.motion_dock.display_status(status, context)
+        request = status.reference_capture
+        if request != self._reference_capture_request:
+            self._reference_capture_request = request
+            if (request is not None and status.connected
+                    and request.config_revision == self._motion_config_revision
+                    and request.channel == self.motion_dock.config.reference_channel):
+                now = time.monotonic()
+                # GUI stalls can bring separately sampled edges close together
+                # when handled. Bound actual captures as well as input requests.
+                if (self._last_digital_reference_at is None or
+                        now - self._last_digital_reference_at >= REFERENCE_CAPTURE_INTERVAL_S):
+                    self._last_digital_reference_at = now
+                    self.capture_reference()
 
     def _source_changed(self, kind):
         self.device.clear()
@@ -572,8 +592,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reference = None
         self.last_pair = None
         self.measurement.configure(None, self.config)
-        self.reference_pane.image.clear()
-        self.reference_pane.array = None
+        self.reference_pane.clear_image()
         self.reference_pane._region = None
         self.reference_pane.set_region(Region())
         self.reference_pane.clear_annotations()
@@ -1077,6 +1096,7 @@ class MainWindow(QtWidgets.QMainWindow):
             control.currentIndexChanged.connect(self._schedule_settings_save)
         self.tolerance.valueChanged.connect(self._schedule_settings_save)
         self.trend_toggle.toggled.connect(self._schedule_settings_save)
+        self.crosshair_toggle.toggled.connect(self._schedule_settings_save)
         self.motion_dock.visibilityChanged.connect(self._schedule_settings_save)
         self.dock.changed.connect(self._schedule_settings_save)
         for control in self.camera_controls.values():
@@ -1098,7 +1118,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._settings_path.parent.mkdir(parents=True, exist_ok=True)
             ui = dict(source_kind=self.source_kind.currentText(), device_id=self.device.currentData() or "",
                       device_label=self.device.currentText(), view_mode=self.view_mode.currentText(),
-                      trend=self.trend_toggle.isChecked(), motion_visible=not self.motion_dock.isHidden(),
+                      trend=self.trend_toggle.isChecked(), crosshair=self.crosshair_toggle.isChecked(),
+                      motion_visible=not self.motion_dock.isHidden(),
                       analytics_visible=not self.dock.isHidden(), analytics_mode=self.dock.mode.currentText(),
                       analytics_tab=self.dock.tabs.currentIndex(),
                       analytics_pages=[page.enabled.isChecked() for page in self.dock.pages.values()])
@@ -1146,7 +1167,8 @@ class MainWindow(QtWidgets.QMainWindow):
             tab = ui.get("analytics_tab")
             if type(tab) is int and 0 <= tab < self.dock.tabs.count():
                 self.dock.tabs.setCurrentIndex(tab)
-            for control, key in ((self.trend_toggle, "trend"), (self.motion_dock, "motion_visible"),
+            for control, key in ((self.trend_toggle, "trend"), (self.crosshair_toggle, "crosshair"),
+                                 (self.motion_dock, "motion_visible"),
                                  (self.dock, "analytics_visible")):
                 value = ui.get(key)
                 if type(value) is bool:
