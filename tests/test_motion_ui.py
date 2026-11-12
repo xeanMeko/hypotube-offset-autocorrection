@@ -12,7 +12,7 @@ import numpy as np
 from PySide6 import QtWidgets, QtCore, QtGui, QtTest
 
 from measure_shift.app import MainWindow
-from measure_shift.motion import MotionConfig, MotionStatus, ReferenceCaptureRequest
+from measure_shift.motion import MotionConfig, MotionContext, MotionStatus, ReferenceCaptureRequest
 from measure_shift.motion_hardware import HardwareState
 from measure_shift.motion_widgets import AxisKeyboardFilter, MotionDock
 from measure_shift.models import FramePacket
@@ -205,11 +205,11 @@ def test_os_repeat_events_do_not_release_or_duplicate_real_key(application):
         window.close()
 
 
-def test_unit_switch_preserves_driver_distance_and_speed(application):
-    dock = MotionDock(MotionConfig(jog_distance=40, jog_speed=400, pixels_per_step=.05))
+def test_unit_switch_preserves_driver_distance_and_motor_speed(application):
+    dock = MotionDock(MotionConfig(jog_distance=40, motor_speed=400, pixels_per_step=.05))
     dock.unit.setCurrentIndex(dock.unit.findData("pixels"))
     assert dock.config.jog_distance == pytest.approx(2)
-    assert dock.config.jog_speed == pytest.approx(20)
+    assert dock.config.motor_speed == 400
     assert dock.config.distance_steps() == 40
     assert dock.config.speed_steps() == 400
     dock.close()
@@ -310,8 +310,69 @@ def test_default_calibration_move_uses_100_steps(application):
     dock.close()
 
 
+@pytest.mark.parametrize("steps,pixels", [(400, 20), (400, -20), (1, 49)])
+def test_known_pixel_nudge_calibrates_without_motor_movement_and_is_saved(
+        application, monkeypatch, tmp_path, steps, pixels):
+    from measure_shift.storage import load_profile
+
+    hardware = FakeHardware()
+    path = tmp_path / "known-distance.json"
+    window = MainWindow(motion_hardware=hardware, settings_path=path)
+    context = MotionContext(source_id="ids:serial:known", source_kind="IDS", shape=(32, 48),
+                            config_id=window.config.config_id, connected=True)
+    monkeypatch.setattr(window, "_axis_context", lambda: context)
+    try:
+        dock = window.motion_dock
+        dock.distance.setValue(steps)
+        pump(application, lambda: dock.use_known_distance_button.isEnabled(), timeout=2, required=True)
+        assert f"+{steps} driver steps" in dock.known_distance_hint.text()
+        dock.known_pixel_distance.setValue(pixels)
+        dock.use_known_distance_button.click()
+        pump(application, lambda: window._motion_status.config_revision == window._motion_config_revision
+             and window._motion_status.config.pixels_per_step == pixels / steps, timeout=2, required=True)
+        assert dock.unit.currentData() == "pixels"
+        assert dock.distance.value() == abs(pixels)
+        assert dock.config.distance_steps() == steps
+        assert dock.config.calibration_source_id == context.source_id
+        assert dock.config.calibration_shape == context.shape
+        assert dock.config.speed_steps() == 200
+        assert window.reference is None
+        assert not hardware.moves and "connect" not in hardware.calls
+        assert not hardware.state.enabled
+        dock.distance.setValue(abs(pixels) * 2)
+        assert dock.config.distance_steps() == steps * 2
+        assert dock.known_pixel_distance.value() == pixels * 2
+    finally:
+        window.close()
+        application.processEvents()
+    saved = MotionConfig.from_dict(load_profile(path, include_motion=True)[4])
+    assert saved.pixels_per_step == pixels / steps
+    assert saved.jog_distance == abs(pixels) * 2 and saved.jog_unit == "pixels"
+    assert saved.calibration_source_id == context.source_id
+
+
+def test_known_pixel_distance_rejects_zero_and_requires_a_live_camera(application, monkeypatch):
+    window = MainWindow(motion_hardware=FakeHardware())
+    try:
+        before = window.motion_dock.config
+        assert not window.motion_dock.use_known_distance_button.isEnabled()
+        window._set_known_pixel_distance(20)
+        assert "live IDS or Basler camera" in window.notice.text()
+        assert window.motion_dock.config == before
+        context = MotionContext(source_id="ids:known", source_kind="IDS", shape=(32, 48),
+                                config_id=window.config.config_id, connected=True)
+        monkeypatch.setattr(window, "_axis_context", lambda: context)
+        window._set_known_pixel_distance(0)
+        assert "nonzero" in window.notice.text()
+        assert window.motion_dock.config == before
+        assert not window.motion.hardware.moves
+    finally:
+        window.close()
+        application.processEvents()
+
+
 def test_resolution_change_clears_scales_and_visible_units(application):
-    dock = MotionDock(MotionConfig(jog_unit="pixels", jog_distance=2, jog_speed=20,
+    dock = MotionDock(MotionConfig(jog_unit="pixels", jog_distance=2, motor_speed=400,
                                    pixels_per_step=.05))
     dock.resolution.setCurrentIndex(dock.resolution.findData(16))
     assert dock.config.pixels_per_step is None
@@ -325,9 +386,9 @@ def test_rejected_edit_reverts_and_channel_swaps_are_atomic(application):
     dock = MotionDock()
     errors = []
     dock.error.connect(errors.append)
-    dock.speed.setValue(100000)
-    assert errors and dock.speed.value() == 200
-    assert dock.config.jog_speed == 200
+    dock.distance.setValue(.5)
+    assert errors and dock.distance.value() == 1
+    assert dock.config.jog_distance == 1
     dock.left_channel.setCurrentIndex(1)
     assert dock.config.left_channel == 1 and dock.config.right_channel == 2
     assert dock.right_channel.currentData() == 2

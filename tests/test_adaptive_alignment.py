@@ -319,7 +319,7 @@ def test_invalid_local_comparison_cannot_save_a_scale():
 
 
 def test_automatic_recalibration_preserves_manual_units_and_effective_motion():
-    config = calibrated(jog_unit="pixels", jog_distance=7, jog_speed=250)
+    config = calibrated(jog_unit="pixels", jog_distance=7, motor_speed=250)
     axis = Axis(config=config, gain=.8, session_calibrated=False)
 
     axis.run()

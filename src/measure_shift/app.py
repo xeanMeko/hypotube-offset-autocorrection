@@ -317,6 +317,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.motion_dock.arm_requested.connect(self.motion.arm)
         self.motion_dock.stop_requested.connect(self._stop_motion)
         self.motion_dock.calibrate_requested.connect(self._calibrate_motion)
+        self.motion_dock.known_distance_requested.connect(self._set_known_pixel_distance)
         self.motion_dock.align_requested.connect(self._align_motion)
         self.motion_dock.error.connect(self._error)
 
@@ -422,6 +423,27 @@ class MainWindow(QtWidgets.QMainWindow):
     def _align_motion(self):
         self.motion.set_context(self._axis_context())
         self.motion.align()
+
+    def _set_known_pixel_distance(self, pixels):
+        context = self._axis_context()
+        if not context.live_camera_ready:
+            self._error("Connect a live IDS or Basler camera before entering known pixel movement")
+            return
+        try:
+            if not math.isfinite(pixels) or pixels == 0:
+                raise ValueError("Known pixel movement must be finite and nonzero")
+            old = self.motion_dock.config
+            scale = pixels / old.distance_steps()
+            config = replace(old, pixels_per_step=scale,
+                             calibration_source_id=context.source_id, calibration_shape=context.shape,
+                             jog_unit="pixels", jog_distance=abs(pixels)).validated()
+        except ValueError as exc:
+            self._error(exc)
+            return
+        self.motion.set_context(context)
+        self.motion_dock.set_config(config)
+        self._motion_config_changed(config)
+        self.notice.setText(f"Known pixel distance saved: {pixels:+.6g} px/nudge ({scale:+.6g} px/driver step)")
 
     def _poll_motion(self):
         context = self._axis_context()

@@ -96,7 +96,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert dock.config.reference_channel == 1 and dock.reference_channel.currentData() == 1
         assert not dock.config.active_high and not dock.config.invert_direction
         assert dock.config.motor_current_ma == 900 and dock.config.step_resolution == 16
-        assert (dock.config.jog_distance, dock.config.jog_speed, dock.config.repeat_hz) == (7, 125, 4)
+        assert (dock.config.jog_distance, dock.config.motor_speed, dock.config.repeat_hz) == (7, 125, 4)
         assert restored.config.scale == .5 and restored.config.min_response == .25
         assert restored.tolerance.value() == 2.5 and restored.dock.rate.value() == 3
         assert restored.source_kind.currentText() == "Basler"

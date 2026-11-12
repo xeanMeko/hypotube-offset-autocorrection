@@ -110,7 +110,7 @@ def test_profile_roundtrip(tmp_path):
 
 def test_motion_profile_roundtrip_keeps_original_loader_contract(tmp_path):
     from measure_shift.motion import MotionConfig
-    motion = MotionConfig(motor_current_ma=800, jog_distance=2, jog_speed=20,
+    motion = MotionConfig(motor_current_ma=800, jog_distance=2, motor_speed=400,
                           jog_unit="pixels", repeat_hz=3.5,
                           pixels_per_step=-.05, calibration_shape=(480, 640),
                           calibration_source_id="ids:serial:example")

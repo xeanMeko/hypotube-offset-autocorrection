@@ -84,6 +84,7 @@ class MotionDock(QtWidgets.QDockWidget):
     arm_requested = QtCore.Signal()
     stop_requested = QtCore.Signal()
     calibrate_requested = QtCore.Signal(int)
+    known_distance_requested = QtCore.Signal(float)
     align_requested = QtCore.Signal()
     error = QtCore.Signal(str)
 
@@ -161,6 +162,24 @@ class MotionDock(QtWidgets.QDockWidget):
         form.addRow("Motor current", self.motor_current)
         form.addRow("Step resolution", self.resolution)
         form.addRow(self.interpolation)
+        self.advanced_motor_toggle = QtWidgets.QToolButton()
+        self.advanced_motor_toggle.setText("Advanced motor settings")
+        self.advanced_motor_toggle.setCheckable(True)
+        self.advanced_motor_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.advanced_motor_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self.advanced_motor_settings = QtWidgets.QWidget()
+        advanced_form = QtWidgets.QFormLayout(self.advanced_motor_settings)
+        advanced_form.setContentsMargins(0, 0, 0, 0)
+        self.speed = QtWidgets.QSpinBox()
+        self.speed.setRange(1, 65535)
+        self.speed.setSuffix(" steps/s")
+        self.speed.setKeyboardTracking(False)
+        self.speed.setToolTip("Speed for nudges, calibration moves, and Align X, in driver steps per second. Default: 200 steps/s.")
+        advanced_form.addRow("Motor speed", self.speed)
+        self.advanced_motor_settings.hide()
+        self.advanced_motor_toggle.toggled.connect(self._toggle_advanced_motor_settings)
+        form.addRow(self.advanced_motor_toggle)
+        form.addRow(self.advanced_motor_settings)
         form.addRow(self.setup_button)
         form.addRow(self.arm_button)
         layout.addWidget(motor)
@@ -171,7 +190,7 @@ class MotionDock(QtWidgets.QDockWidget):
         for label, value in (("Driver steps", "driversteps"), ("Pixels", "pixels")):
             self.unit.addItem(label, value)
         self.distance = self._number(0.00000001, 1e9, 8)
-        self.speed = self._number(0.00000001, 1e9, 8)
+        self.distance.setToolTip("Distance of each manual nudge and maximum distance of each Align X correction.")
         self.frequency = self._number(.1, 10, 1)
         self.frequency.setSuffix(" Hz")
         self.frequency.setSingleStep(.1)
@@ -181,7 +200,6 @@ class MotionDock(QtWidgets.QDockWidget):
         hint.setWordWrap(True)
         form.addRow("Units", self.unit)
         form.addRow("Distance / nudge", self.distance)
-        form.addRow("Motor speed", self.speed)
         form.addRow("Repeat frequency", self.frequency)
         form.addRow(self.effective)
         form.addRow(hint)
@@ -196,7 +214,17 @@ class MotionDock(QtWidgets.QDockWidget):
         self.test_steps.setValue(100)
         self.calibrate_button = QtWidgets.QPushButton("Run pixel calibration move")
         self.calibrate_button.setToolTip("Capture the latest live image, move this signed number of driver steps, and compare the new image with that baseline. Keep a textured feature visible.")
+        self.known_pixel_distance = self._number(-1e9, 1e9, 8)
+        self.known_pixel_distance.setSuffix(" px")
+        self.known_pixel_distance.setToolTip("Known X movement for a positive driver-step nudge. Use a negative value if positive motor steps move the image left.")
+        self.known_distance_hint = QtWidgets.QLabel()
+        self.known_distance_hint.setWordWrap(True)
+        self.use_known_distance_button = QtWidgets.QPushButton("Use known distance")
+        self.use_known_distance_button.setToolTip("Save the known pixel movement as calibration for the live camera, without moving the motor.")
         form.addRow(self.pixel_scale)
+        form.addRow("Known distance / nudge", self.known_pixel_distance)
+        form.addRow(self.known_distance_hint)
+        form.addRow(self.use_known_distance_button)
         form.addRow("Test move (steps)", self.test_steps)
         form.addRow(self.calibrate_button)
         layout.addWidget(calibration)
@@ -231,6 +259,8 @@ class MotionDock(QtWidgets.QDockWidget):
         self.arm_button.clicked.connect(self.arm_requested)
         self.stop_button.clicked.connect(self.stop_requested)
         self.calibrate_button.clicked.connect(lambda: self.calibrate_requested.emit(self.test_steps.value()))
+        self.use_known_distance_button.clicked.connect(
+            lambda: self.known_distance_requested.emit(self.known_pixel_distance.value()))
         self.align_button.clicked.connect(self.align_requested)
         self.set_config(self._config)
         self.set_connected(False)
@@ -246,6 +276,11 @@ class MotionDock(QtWidgets.QDockWidget):
     @property
     def config(self):
         return self._config
+
+    def _toggle_advanced_motor_settings(self, expanded):
+        self.advanced_motor_settings.setVisible(expanded)
+        self.advanced_motor_toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if expanded else QtCore.Qt.ArrowType.RightArrow)
 
     def set_config(self, config):
         self._syncing = True
@@ -266,7 +301,7 @@ class MotionDock(QtWidgets.QDockWidget):
             self.unit.model().item(1).setEnabled(config.pixels_per_step is not None)
             self.unit.setCurrentIndex(self.unit.findData(config.jog_unit))
             self.distance.setValue(config.jog_distance)
-            self.speed.setValue(config.jog_speed)
+            self.speed.setValue(config.motor_speed)
             self.frequency.setValue(config.repeat_hz)
             self.pixel_scale.setText(f"Pixels: {config.pixels_per_step:+.6g} px / driver step" if config.pixels_per_step is not None else "Pixels: not calibrated")
             self._effective()
@@ -276,11 +311,13 @@ class MotionDock(QtWidgets.QDockWidget):
     def _effective(self):
         suffix = {"driversteps": " steps", "pixels": " px"}[self._config.jog_unit]
         self.distance.setSuffix(suffix)
-        self.speed.setSuffix(suffix + "/s")
         try:
             steps = self._config.distance_steps()
-            speed = self._config.speed_steps()
-            self.effective.setText(f"Effective: {steps:,} driver steps / nudge at {speed:,} steps/s")
+            self.effective.setText(f"Effective: {steps:,} driver steps / nudge")
+            self.known_distance_hint.setText(
+                f"X movement for +{steps:,} driver steps. Positive pixels: image moves right; negative: left.")
+            self.known_pixel_distance.setValue(steps * self._config.pixels_per_step
+                                             if self._config.pixels_per_step is not None else 0.)
         except ValueError as exc:
             self.effective.setText(str(exc))
 
@@ -290,12 +327,11 @@ class MotionDock(QtWidgets.QDockWidget):
         new_unit = self.unit.currentData()
         old = self._config
         try:
-            # Preserve the effective motor distance/speed when switching units.
+            # Preserve the effective motor distance when switching units.
             scale = {"driversteps": 1.0, "pixels": abs(old.pixels_per_step or 0)}[new_unit]
             if not scale:
                 raise ValueError("Calibrate this unit before selecting it")
-            config = replace(old, jog_unit=new_unit, jog_distance=old.distance_steps() * scale,
-                             jog_speed=old.speed_steps() * scale).validated()
+            config = replace(old, jog_unit=new_unit, jog_distance=old.distance_steps() * scale).validated()
             self.set_config(config)
             self.config_changed.emit(config)
         except ValueError as exc:
@@ -320,11 +356,11 @@ class MotionDock(QtWidgets.QDockWidget):
                              active_high=self.active_high.isChecked(), invert_direction=self.invert_direction.isChecked(),
                              motor_current_ma=self.motor_current.value() or None, step_resolution=self.resolution.currentData(),
                              interpolation=self.interpolation.isChecked(), jog_unit=self.unit.currentData(),
-                             jog_distance=self.distance.value(), jog_speed=self.speed.value(), repeat_hz=self.frequency.value())
+                             jog_distance=self.distance.value(), motor_speed=self.speed.value(), repeat_hz=self.frequency.value())
             if config.step_resolution != old.step_resolution:
                 config = replace(config, pixels_per_step=None,
                                  calibration_source_id="", calibration_shape=None,
-                                 jog_unit="driversteps", jog_distance=1., jog_speed=200.)
+                                 jog_unit="driversteps", jog_distance=1.)
             config = config.validated()
             if config.step_resolution != old.step_resolution:
                 self.set_config(config)
@@ -349,6 +385,7 @@ class MotionDock(QtWidgets.QDockWidget):
         self.setup_button.setEnabled(connected)
         self.arm_button.setEnabled(False)
         self.calibrate_button.setEnabled(False)
+        self.use_known_distance_button.setEnabled(False)
         self.align_button.setEnabled(False)
 
     def display_status(self, status, context):
@@ -366,4 +403,7 @@ class MotionDock(QtWidgets.QDockWidget):
         self.arm_button.setEnabled(status.connected and not status.armed)
         live = context.live_camera_ready
         self.calibrate_button.setEnabled(status.armed and idle and live)
+        self.use_known_distance_button.setEnabled(
+            live and (idle or status.phase in ("disconnected", "connected"))
+            and status.velocity == 0 and status.remaining == 0)
         self.align_button.setEnabled(status.armed and idle and context.camera_ready and status.pixels_per_step is not None)

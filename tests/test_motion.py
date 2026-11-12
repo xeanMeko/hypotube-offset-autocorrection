@@ -45,8 +45,9 @@ def pixel_config(**kwargs):
 
 
 @pytest.mark.parametrize("field,value", [("repeat_hz", 0), ("repeat_hz", 11), ("jog_distance", math.nan),
-                                          ("jog_distance", .6), ("jog_speed", .6),
-                                          ("jog_speed", math.inf), ("left_channel", 4),
+                                          ("jog_distance", .6), ("motor_speed", .6),
+                                          ("motor_speed", math.inf), ("motor_speed", 0),
+                                          ("motor_speed", 65536), ("motor_speed", True), ("left_channel", 4),
                                           ("reference_channel", -1), ("reference_channel", 4),
                                           ("reference_channel", True), ("reference_channel", "0"),
                                           ("reference_channel", 1.0),
@@ -58,10 +59,10 @@ def test_invalid_configuration_is_rejected(field, value):
 
 
 def test_configuration_roundtrip_and_pixel_unit_conversion():
-    config = pixel_config(jog_unit="pixels", jog_distance=5, jog_speed=40, reference_channel=3)
+    config = pixel_config(jog_unit="pixels", jog_distance=5, motor_speed=40, reference_channel=3)
     config = replace(config, pixels_per_step=-2)
     assert config.distance_steps() == 2
-    assert config.speed_steps() == 20
+    assert config.speed_steps() == 40
     assert MotionConfig.from_dict(config.to_dict()) == config
     with pytest.raises(ValueError, match="at least one"):
         replace(config, jog_distance=.1).validated()
@@ -162,8 +163,19 @@ def test_legacy_mm_profile_converts_to_driver_steps():
                                      "jog_speed": .5, "steps_per_mm": 800})
     assert config.jog_unit == "driversteps"
     assert config.distance_steps() == 40
-    assert config.speed_steps() == 400
+    assert config.speed_steps() == 200
     assert "steps_per_mm" not in config.to_dict()
+
+
+@pytest.mark.parametrize("unit", ["driversteps", "pixels", "mm"])
+@pytest.mark.parametrize("old_speed", [1, 50_000, None, "invalid"])
+def test_old_profile_speeds_reset_to_default_driver_step_speed(unit, old_speed):
+    config = MotionConfig.from_dict({"jog_unit": unit, "jog_distance": 10,
+                                     "jog_speed": old_speed, "pixels_per_step": -.5,
+                                     "steps_per_mm": 800})
+    assert config.speed_steps() == 200
+    assert "jog_speed" not in config.to_dict()
+    assert MotionConfig.from_dict({**config.to_dict(), "motor_speed": 350}).speed_steps() == 350
 
 
 def test_current_defaults_to_800_in_new_and_previously_unset_profiles():
@@ -311,7 +323,7 @@ def test_nudge_setting_edit_affects_next_move_without_interrupting_current_move(
     controller = ready()
     controller.set_keyboard(False, True)
     controller.tick(1)
-    controller.configure(replace(controller.config, jog_distance=7, jog_speed=50, repeat_hz=4), 1)
+    controller.configure(replace(controller.config, jog_distance=7, motor_speed=50, repeat_hz=4), 1)
     assert not controller._stopping
     assert not moves(controller.tick(1.2, state(velocity=200, remaining=1)))
     action = moves(controller.tick(1.5, state(1)))[0]
@@ -381,7 +393,7 @@ def test_calibration_measures_actual_position_not_requested_steps():
     assert controller.config.pixels_per_step == 2.5
     assert controller.config.jog_unit == "pixels"
     assert controller.config.jog_distance == 2.5
-    assert controller.config.jog_speed == 500
+    assert controller.config.motor_speed == 200
     assert "2.5 px/nudge" in controller.message
     assert controller.config.calibration_source_id == CONTEXT.source_id
     assert controller.config.calibration_shape == CONTEXT.shape
@@ -412,7 +424,7 @@ def test_calibration_rejects_small_pixel_motion_without_saving_scale():
 
 
 def test_recalibration_in_pixel_units_preserves_valid_motor_distance_and_speed():
-    controller = ready(pixel_config(jog_unit="pixels", jog_distance=10, jog_speed=60_000))
+    controller = ready(pixel_config(jog_unit="pixels", jog_distance=10, motor_speed=60_000))
     controller.request_calibration(10)
     controller.tick(1)
     controller.acknowledge_freshness(1)
@@ -423,7 +435,7 @@ def test_recalibration_in_pixel_units_preserves_valid_motor_distance_and_speed()
     assert controller.config.pixels_per_step == .2
     assert controller.config.jog_unit == "pixels"
     assert controller.config.jog_distance == 2
-    assert controller.config.jog_speed == 12_000
+    assert controller.config.motor_speed == 60_000
     assert controller.config.distance_steps() == 10
     assert controller.config.speed_steps() == 60_000
     assert controller.config.validated() == controller.config
@@ -483,17 +495,17 @@ def test_context_change_cancels_feedback_motion(change):
 
 
 def test_camera_change_invalidates_pixel_scale_and_preserves_realized_nudge():
-    controller = ready(replace(pixel_config(), jog_unit="pixels", jog_distance=6, jog_speed=400,
+    controller = ready(replace(pixel_config(), jog_unit="pixels", jog_distance=6, motor_speed=400,
                                pixels_per_step=2))
     controller.set_context(replace(CONTEXT, source_id="ids:2"))
     assert controller.config.pixels_per_step is None
     assert controller.config.jog_unit == "driversteps"
     assert controller.config.jog_distance == 3
-    assert controller.config.jog_speed == 200
+    assert controller.config.motor_speed == 400
 
 
 def test_microstep_change_invalidates_pixel_calibration():
-    controller = ready(replace(pixel_config(), jog_unit="pixels", jog_distance=10, jog_speed=200))
+    controller = ready(replace(pixel_config(), jog_unit="pixels", jog_distance=10, motor_speed=200))
     controller.configure(replace(controller.config, step_resolution=16), 7)
     assert controller.config.pixels_per_step is None
     assert controller.config.jog_unit == "driversteps"

@@ -235,7 +235,7 @@ compensation.
   most recent **10,000 measurements**; export during long sessions if earlier
   measurements are needed.
 - **Automatic settings:** edits are saved automatically and restored on startup,
-  including motor current, joystick channels and polarity, nudge distance/speed,
+  including motor current and speed, joystick channels and polarity, nudge distance,
   calibration, matching settings, tolerance, camera settings, source selection,
   and panel visibility. On Linux the file is
   `$XDG_CONFIG_HOME/measure-shift/settings.json`, or
@@ -331,8 +331,10 @@ and enables the motor. Camera-only and Demo use do not require Tinkerforge bindi
    Watch all four **Raw inputs** while testing your joystick, then
    change the left/right channel selections and **Active high** polarity as
    needed. **Invert motor direction** swaps which motor direction means right.
-3. Set **Distance / nudge**, **Motor speed**, and **Repeat frequency**. The defaults
-   are **1 driver step**, **200 steps/s**, and **2 Hz**. A press performs one
+3. Set **Distance / nudge** and **Repeat frequency**. The defaults
+   are **1 driver step** and **2 Hz**. Motor speed defaults to **200 driver steps/s**;
+   adjust it under **Motor setup → Advanced motor settings** if needed.
+   A press performs one
    nudge when sampled; holding repeats at the selected frequency. Releasing finishes
    the current nudge. Inputs are not buffered: presses released before the axis is
    ready are discarded. Each move waits for the previous move to finish, and repeats
@@ -360,15 +362,26 @@ the view is paused. The channel selection is saved with settings. Inputs are
 sampled by the motion worker, so pulses shorter than its polling interval can
 be missed.
 
-The repeat frequency controls how often a nudge starts; motor speed controls how
-fast each nudge travels. For example, **1 px/nudge**, **10 px/s**, and **2 Hz**
-means a 1-pixel move taking roughly 0.1 seconds, repeated at most every 0.5 seconds
-while held. A move longer than the repeat interval finishes before another starts.
+The repeat frequency controls how often a nudge starts; the advanced motor speed
+controls how fast each nudge travels, always in driver steps/s regardless of the
+nudge units. For example, **20 steps/nudge** at the default **200 steps/s** takes
+roughly 0.1 seconds, repeated at most every 0.5 seconds with **2 Hz** while held.
+A move longer than the repeat interval finishes before another starts.
 Changes apply to subsequent nudges. Settings profiles retain these controls,
 wiring, and calibration, but loading a profile disconnects motion hardware and
 never activates it.
 
 ### Calibrate pixels
+
+If you already know the pixel movement of the current **Distance / nudge**, enter
+it in **Pixel calibration → Known distance / nudge** and click **Use known distance**.
+The hint shows the positive driver-step move that the value describes. Enter
+positive pixels when that move shifts the image right, or negative pixels when
+it shifts left. For example, **+400 driver steps** and **+20 px** give
+**+0.05 px/step**. This saves calibration for the connected live IDS or Basler
+camera and switches the nudge distance to pixels without moving the motor.
+You can then set the desired pixel nudge size in **Distance / nudge**. The saved
+calibration follows the same camera and step-resolution checks as measured calibration.
 
 Use a real IDS or Basler camera with a textured feature visible in the live
 image. **Test move (steps)** defaults to **100**;
@@ -386,25 +399,27 @@ The signed calibration is `pixels_per_step = change in measured X / change in
 motor position`. For example, a +400-driver-step move observed as +20 pixels gives
 **+0.05 px/step**. A 1-pixel nudge then uses 20 driver steps. A negative result is
 valid and tells automatic alignment that positive motor motion moves the image
-left. Successful calibration switches the nudge controls to pixels while keeping
-the same effective motor distance and speed. Keep **Invert
+left. Successful calibration switches the nudge distance to pixels while keeping
+the same effective motor distance. Motor speed stays in driver steps/s. Keep **Invert
 motor direction** consistent with the left/right behavior you want from manual
 controls; alignment uses the measured calibration sign.
 
-The UI shows the effective driver-step distance and speed after integer rounding;
+The UI shows the effective driver-step distance after integer rounding;
 an amount below one driver step is rejected. Changing units preserves the
-effective distance and speed. A step-resolution change clears pixel calibration;
+effective distance and leaves motor speed unchanged. A step-resolution change clears pixel calibration;
 changing camera identity or image dimensions clears pixel calibration. Recalibrate
 pixels after changing magnification or the camera/axis geometry. If the camera's
 serial cannot be read, pixel calibration is cleared on reconnect.
 Older profiles with millimetre nudge settings load as equivalent driver-step
-settings.
+distances. Older saved nudge speeds are replaced with the default **200 driver
+steps/s**. Changes made to the new advanced motor speed setting are saved with profiles.
 
 ### Mechanical X alignment
 
 With valid pixel calibration, a fixed reference, and neutral manual controls,
 click **Align X**. Each correction is capped at the current nudge distance and
-uses the selected motor speed. After each move, the controller waits at least
+uses **200 driver steps/s** unless changed under **Advanced motor settings**.
+Distance / nudge is the main alignment adjustment. After each move, the controller waits at least
 200 ms (extended for exposure/frame timing), refreshes camera queues, and uses
 only new feedback before correcting again. These frame timestamps describe
 application acquisition, not sensor exposure timestamps.

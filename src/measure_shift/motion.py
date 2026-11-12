@@ -36,7 +36,7 @@ class MotionConfig:
     interpolation: bool = True
     jog_unit: str = "driversteps"
     jog_distance: float = 1.0
-    jog_speed: float = 200.0
+    motor_speed: int = 200
     repeat_hz: float = 2.0
     pixels_per_step: float | None = None
     calibration_source_id: str = ""
@@ -65,7 +65,7 @@ class MotionConfig:
             raise ValueError("Step resolution must be a supported microstep denominator")
         if self.jog_unit not in {"driversteps", "pixels"}:
             raise ValueError("Unknown jog distance unit")
-        for name in ("jog_distance", "jog_speed", "repeat_hz"):
+        for name in ("jog_distance", "repeat_hz"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name.replace('_', ' ').capitalize()} must be positive and finite")
@@ -83,18 +83,16 @@ class MotionConfig:
         self.speed_steps()
         return self
 
-    def _factor(self) -> float:
-        if self.jog_unit == "pixels":
-            if self.pixels_per_step is None:
-                raise ValueError("Calibrate image pixels per driver step before using pixels")
-            return 1 / abs(self.pixels_per_step)
-        return 1.0
-
     def distance_steps(self, value: float | None = None) -> int:
         value = self.jog_distance if value is None else value
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             raise ValueError("Nudge distance must be positive and finite")
-        requested_steps = value * self._factor()
+        if self.jog_unit == "pixels":
+            if self.pixels_per_step is None:
+                raise ValueError("Calibrate image pixels per driver step before using pixels")
+            requested_steps = value / abs(self.pixels_per_step)
+        else:
+            requested_steps = value
         if not math.isfinite(requested_steps) or requested_steps < 1:
             raise ValueError("Nudge distance must resolve to at least one driver step and fit the motor range")
         steps = round(requested_steps)
@@ -103,13 +101,9 @@ class MotionConfig:
         return steps
 
     def speed_steps(self) -> int:
-        requested_speed = self.jog_speed * self._factor()
-        if not math.isfinite(requested_speed) or requested_speed < 1:
-            raise ValueError("Nudge speed must resolve to between 1 and 65535 driver steps/s")
-        speed = round(requested_speed)
-        if not 1 <= speed <= 65_535:
-            raise ValueError("Nudge speed must resolve to between 1 and 65535 driver steps/s")
-        return speed
+        if type(self.motor_speed) is not int or not 1 <= self.motor_speed <= 65_535:
+            raise ValueError("Motor speed must be an integer between 1 and 65535 driver steps/s")
+        return self.motor_speed
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -119,6 +113,8 @@ class MotionConfig:
         if not isinstance(value, dict):
             raise ValueError("Motion settings must be an object")
         names = {f.name for f in fields(cls)}
+        # Retired jog_speed values depended on the nudge unit. Old profiles
+        # start with the default motor speed in driver steps/s instead.
         kwargs = {key: item for key, item in value.items() if key in names}
         if kwargs.get("jog_unit") == "mm":
             # Older profiles stored physical units. Preserve their effective
@@ -127,14 +123,12 @@ class MotionConfig:
             if (isinstance(scale, bool) or not isinstance(scale, (int, float)) or
                     not math.isfinite(scale) or scale <= 0):
                 raise ValueError("Legacy millimetre settings need positive driver steps per millimetre")
-            for name in ("jog_distance", "jog_speed"):
-                amount = value.get(name, getattr(cls, name))
-                if (isinstance(amount, bool) or not isinstance(amount, (int, float)) or
-                        not math.isfinite(amount) or amount <= 0):
-                    raise ValueError(f"Legacy {name.replace('_', ' ')} must be positive and finite")
+            amount = value.get("jog_distance", cls.jog_distance)
+            if (isinstance(amount, bool) or not isinstance(amount, (int, float)) or
+                    not math.isfinite(amount) or amount <= 0):
+                raise ValueError("Legacy jog distance must be positive and finite")
             kwargs["jog_unit"] = "driversteps"
-            kwargs["jog_distance"] = value.get("jog_distance", 1.0) * scale
-            kwargs["jog_speed"] = value.get("jog_speed", 200.0) * scale
+            kwargs["jog_distance"] = amount * scale
         if kwargs.get("motor_current_ma") is None:
             kwargs["motor_current_ma"] = 800
         if kwargs.get("calibration_shape") is not None:
@@ -311,14 +305,13 @@ class MotionController:
     @staticmethod
     def _without_scales(config: MotionConfig) -> MotionConfig:
         try:
-            distance, speed = config.distance_steps(), config.speed_steps()
+            distance = config.distance_steps()
         except ValueError:
-            distance, speed = 1, 200
+            distance = 1
         loses_unit = config.jog_unit == "pixels"
         return replace(config, pixels_per_step=None, calibration_source_id="", calibration_shape=None,
                        jog_unit="driversteps" if loses_unit else config.jog_unit,
-                       jog_distance=float(distance) if loses_unit else config.jog_distance,
-                       jog_speed=float(speed) if loses_unit else config.jog_speed)
+                       jog_distance=float(distance) if loses_unit else config.jog_distance)
 
     def _invalidate_camera_scale(self):
         if self.config.pixels_per_step is None or not self.context.source_id or self.context.shape is None:
@@ -593,10 +586,9 @@ class MotionController:
                 candidate = replace(self.config, pixels_per_step=scale,
                                     calibration_source_id=self.context.source_id, calibration_shape=self.context.shape)
                 # Show the calibrated nudge in pixels, preserving its selected
-                # motor distance and speed through the unit change.
+                # motor distance through the unit change.
                 candidate = replace(candidate, jog_unit="pixels",
-                                    jog_distance=self.config.distance_steps() * abs(scale),
-                                    jog_speed=self.config.speed_steps() * abs(scale))
+                                    jog_distance=self.config.distance_steps() * abs(scale))
                 self.config = candidate.validated()
                 self._operation = None
                 self.phase = "ready"
