@@ -424,7 +424,9 @@ class MotionController:
             raise ValueError("Calibration needs a nonzero signed number of driver steps")
         self._pending_operation = ("calibration", steps)
 
-    def cancel(self, message="Motion stopped; click Enable motor to continue", *, disarm=True):
+    def cancel(self, message="Motion stopped; release both directions before the next press", *, disarm=False):
+        # Recoverable operation failures stop motion without requiring another
+        # Enable click. Hardware faults and setup changes explicitly disarm.
         self._operation = self._pending_operation = None
         self._feedback_retry_started_at = None
         self._confirmations = 0
@@ -531,6 +533,7 @@ class MotionController:
                     and math.isfinite(feedback.dx) and math.isfinite(feedback.dy)):
                 self._retry_operation_feedback(now, "Camera match is uncertain at low offset; a valid match is required")
             else:
+                print(f"DEBUG: feedback unusable: usable={feedback.usable} validity={feedback.validity} dx={feedback.dx} dy={feedback.dy}")
                 self._retry_operation_feedback(now, "Camera match is invalid or uncertain")
             return None
         if now - feedback.received_at > self.context.max_feedback_age_s:
@@ -609,13 +612,13 @@ class MotionController:
             return
         self._confirmations = 0
         if self._previous_error is not None:
-            allowance = max(.1, self.context.tolerance_px * .1)
+            allowance = max(.25, self.context.tolerance_px * .1)
             if error > self._previous_error + allowance:
                 self.cancel("X error increased; check motor direction and pixel calibration")
                 return
             self._no_progress = self._no_progress + 1 if self._previous_error - error < max(.05, self.context.tolerance_px * .1) else 0
-            if self._no_progress >= 3:
-                self.cancel("X alignment stopped after three moves without progress")
+            if self._no_progress >= 10:
+                self.cancel("X alignment stopped after 10 moves without progress")
                 return
         if self._corrections >= self.MAX_CORRECTIONS:
             self.cancel("X alignment reached its 100 correction limit")
@@ -673,11 +676,11 @@ class MotionController:
         if inputs is not None:
             self._read_reference_input(now)
         if self.state.fault and (self.armed or self._move or self._operation):
-            self.cancel(f"Motor fault: {self.state.fault}")
+            self.cancel(f"Motor fault: {self.state.fault}", disarm=True)
         if self.setup_applied and self.state.step_resolution != self.config.step_resolution:
             self.config = self._without_scales(self.config)
             self.setup_applied = False
-            self.cancel("Device microstep resolution changed; reapply setup and recalibrate")
+            self.cancel("Device microstep resolution changed; reapply setup and recalibrate", disarm=True)
         left, right = self._logical_inputs()
         # Raw conflicting contacts stop immediately; debounce only delays starts.
         raw_left, raw_right = self._logical_inputs(raw=True)
@@ -702,7 +705,7 @@ class MotionController:
         if self._move:
             purpose, start_position, steps, started, timeout = self._move
             if now - started > timeout:
-                self.cancel("Motor move timed out")
+                self.cancel("Motor move timed out", disarm=True)
             elif now > started and self.state.velocity == 0 and self.state.remaining == 0:
                 self._move = None
                 if purpose == "jog":

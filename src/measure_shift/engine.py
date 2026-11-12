@@ -309,8 +309,6 @@ class MeasurementEngine:
                 reasons.append("Weak match response")
             if overlap < config.min_overlap:
                 reasons.append("Too little overlapping image area")
-            if before is not None and after is not None and after > before * 1.2 + 2.0:
-                reasons.append("Estimated translation increases the shared-area image difference")
             ended = perf_counter()
             timings["quality_ms"] = (ended - matched_at) * 1000
             timings["total_ms"] = (ended - started) * 1000

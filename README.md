@@ -149,8 +149,8 @@ the reported shift and selected regions remain in native image pixels.
 The reference stays fixed while measuring. Changing source geometry clears an
 incompatible reference. Weak texture, uncertain matches, insufficient overlap,
 and camera disconnection have separate states. The correlation response is a
-matching diagnostic, **not a probability**. Residual comparisons provide another
-way to assess a match. Repeated patterns and large motions still require visual
+matching diagnostic, **not a probability**. Residual comparisons are diagnostic
+only and do not reject a match. Repeated patterns and large motions still require visual
 inspection. **Stale measurement** indicates the last comparison is older than
 the allowance for the source frame rate and processing time; the measurement age
 is also shown numerically.
@@ -422,11 +422,17 @@ but a large Y offset permits an uncertain match, the controller waits for valid
 measurements before confirming completion. The match quality details below the
 readout identify which check failed. Select a textured region or a distinctive
 rectangular template and check that both images share the same feature.
-Unrecovered feedback loss, increasing error, three unsuccessful corrections,
+Unrecovered feedback loss, increasing error, ten unsuccessful corrections,
 insufficient step resolution, 100 corrections, or 60 seconds stop the attempt
 with a status message. Manual input cancels calibration/alignment and requires neutral before
 manual movement resumes. Changing the source, reference, matching or motion
 settings, pausing, disconnecting, or closing also cancels the operation.
+
+Failed calibration or alignment attempts stop motion while keeping movement
+enabled. Once the motor has stopped, retry the operation directly or release
+the manual controls and press again to nudge; no **Enable motor** click is needed.
+Driver faults, motor move timeouts, and motor setup changes still disable movement
+and require **Enable motor** after resolving the problem or applying settings.
 
 Motion commands are finite, and shutdown stops the motor before disabling power.
 If the driver is already disabled, Stop and shutdown verify zero velocity and no

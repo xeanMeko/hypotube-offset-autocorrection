@@ -319,15 +319,50 @@ def test_nudge_setting_edit_affects_next_move_without_interrupting_current_move(
     assert controller.snapshot().config_revision == 1
 
 
-def test_stop_disarms_and_does_not_disable_until_motor_is_stopped():
+@pytest.mark.parametrize("disarm", [False, True])
+def test_cancel_waits_for_motor_stop_and_requires_released_controls(disarm):
     controller = ready()
     controller.set_keyboard(False, True)
     controller.tick(1)
-    controller.cancel()
+    if disarm:
+        controller.cancel(disarm=True)
+    else:
+        controller.cancel()
     assert [a.kind for a in controller.tick(1.1, state(velocity=100, remaining=1))] == ["stop"]
-    assert not controller.armed
+    assert controller.armed == (not disarm)
     assert [a.kind for a in controller.tick(1.2, state(1))] == ["disable"]
     assert not moves(controller.tick(3, state(1)))
+    controller.set_keyboard(False, False)
+    assert not moves(controller.tick(3.1, state(1)))
+    controller.set_keyboard(False, True)
+    assert bool(moves(controller.tick(3.2, state(1)))) == (not disarm)
+
+
+def test_cancel_does_not_arm_a_disabled_controller():
+    controller = ready()
+    controller.cancel(disarm=True)
+    controller.tick(1)
+    controller.cancel()
+    controller.tick(2)
+    controller.set_keyboard(False, True)
+    assert not moves(controller.tick(3))
+    assert not controller.armed
+
+
+def test_stalled_motor_still_disarms_until_explicitly_enabled():
+    controller = ready()
+    controller.set_keyboard(False, True)
+    controller.tick(1)
+    moving = state(velocity=200, remaining=1)
+    assert not controller.tick(5.9, moving)
+    assert [action.kind for action in controller.tick(6.1, moving)] == ["stop"]
+    assert not controller.armed
+    assert "Motor move timed out" in controller.message
+    assert [action.kind for action in controller.tick(6.2, state(1))] == ["disable"]
+    controller.set_keyboard(False, False)
+    controller.tick(6.3, state(1))
+    controller.set_keyboard(False, True)
+    assert not moves(controller.tick(6.4, state(1)))
 
 
 def test_calibration_measures_actual_position_not_requested_steps():
@@ -361,10 +396,19 @@ def test_calibration_rejects_small_pixel_motion_without_saving_scale():
     controller.tick(1.3, feedback=feedback("base", 0, 1.21))
     controller.tick(1.4, state(10))
     controller.acknowledge_freshness(2)
-    controller.tick(1.7, state(10), feedback=feedback("after", 1.9, 1.61, generation=2))
+    actions = controller.tick(1.7, state(10), feedback=feedback("after", 1.9, 1.61, generation=2))
+    assert [action.kind for action in actions] == ["stop"]
     assert controller.config.pixels_per_step is None
     assert "at least 2 pixels" in controller.message
-    assert not controller.armed
+    assert controller.armed and controller._operation is None
+
+    # A rejected calibration can be retried without enabling the motor again.
+    controller.request_calibration(20)
+    actions = controller.tick(1.8, state(10))
+    assert [action.kind for action in actions] == ["disable", "freshness"]
+    controller.acknowledge_freshness(3)
+    assert [action.steps for action in moves(controller.tick(
+        2.1, state(10), feedback=feedback("retry", 1.9, 2.01, generation=3)))] == [20]
 
 
 def test_recalibration_in_pixel_units_preserves_valid_motor_distance_and_speed():
@@ -489,7 +533,17 @@ def test_invalid_or_stale_measurements_retry_before_stopping_alignment(dx, usabl
     assert message in controller.message
     assert controller.armed and controller._operation == "align"
     controller.tick(now + 3)
-    assert not controller.armed
+    assert controller.armed and controller._operation is None
+
+    # Stopping the failed attempt does not resume it when feedback returns.
+    assert not moves(controller.tick(now + 3.1))
+    assert controller.phase == "ready"
+    controller.request_align()
+    actions = controller.tick(now + 3.2)
+    assert [action.kind for action in actions] == ["freshness"]
+    controller.acknowledge_freshness(2)
+    assert [action.steps for action in moves(controller.tick(
+        now + 3.5, feedback=feedback("retry", 2, actions[0].after + .01, generation=2)))] == [-1]
 
 
 @pytest.mark.parametrize("dx,dy", [(11, 0), (-11, 0), (3, 11), (3, -11), (-3, 11)])
@@ -518,7 +572,7 @@ def test_uncertain_low_offset_blocks_alignment(dx, dy):
     assert controller.armed and controller._operation == "align"
     actions = controller.tick(4.3)
     assert any(action.kind == "stop" for action in actions)
-    assert not controller.armed and controller._operation is None
+    assert controller.armed and controller._operation is None
     assert "uncertain at low offset" in controller.message
 
 
@@ -533,7 +587,7 @@ def test_invalid_or_nonfinite_large_offsets_still_block_alignment(dx, dy):
         "bad", dx, 1.21, dy=dy, usable=False, validity=validity)))
     assert controller.armed
     controller.tick(4.3)
-    assert not controller.armed
+    assert controller.armed and controller._operation is None
 
 
 def test_uncertain_offset_must_also_exceed_tolerance():
@@ -545,7 +599,7 @@ def test_uncertain_offset_must_also_exceed_tolerance():
         "near", 15, 1.21, usable=False, validity="uncertain")))
     assert controller.armed
     controller.tick(4.3)
-    assert not controller.armed
+    assert controller.armed and controller._operation is None
 
 
 def test_uncertain_coarse_alignment_waits_for_valid_match_when_offsets_become_small():
@@ -577,7 +631,8 @@ def test_uncertain_policy_also_applies_during_motor_movement(dx, dy, allowed):
     assert not any(action.kind == "stop" for action in actions)
     actions = controller.tick(4.4, state(-1, velocity=200, remaining=1), feedback=feedback(
         "later", dx, 4.35, dy=dy, usable=False, validity="uncertain"))
-    assert controller.armed == allowed
+    assert controller.armed
+    assert (controller._operation == "align") == allowed
     assert any(action.kind == "stop" for action in actions) == (not allowed)
 
 
@@ -636,7 +691,7 @@ def test_repeated_bad_frames_and_motor_stop_do_not_extend_feedback_retry_deadlin
     actions = controller.tick(4.4, state(-2), feedback=feedback(
         "last", 2, 4.39, generation=2, usable=False))
     assert any(action.kind == "stop" for action in actions)
-    assert not controller.armed and controller._operation is None
+    assert controller.armed and controller._operation is None
     assert "3 seconds" in controller.message
 
 
@@ -653,7 +708,7 @@ def test_feedback_retry_deadline_still_applies_while_waiting_for_postmove_freshn
     assert controller.armed
     actions = controller.tick(4.41, state(-2))
     assert any(action.kind == "stop" for action in actions)
-    assert not controller.armed
+    assert controller.armed and controller._operation is None
 
 
 def test_good_feedback_resets_the_retry_window_during_movement():
@@ -670,7 +725,7 @@ def test_good_feedback_resets_the_retry_window_during_movement():
     assert controller.armed
     actions = controller.tick(6, moving)
     assert any(action.kind == "stop" for action in actions)
-    assert not controller.armed
+    assert controller.armed and controller._operation is None
 
 
 def test_retry_requires_three_valid_alignment_confirmations_after_recovery():
@@ -701,7 +756,8 @@ def test_uncertain_large_offsets_still_require_fresh_feedback():
         "stale", 100, 1.21, generation=2, usable=False, validity="uncertain")))
     assert controller.armed and "stale" in controller.message
     controller.tick(5.4)
-    assert not controller.armed and "stale" in controller.message
+    assert controller.armed and controller._operation is None
+    assert "stale" in controller.message
 
 
 def test_uncertain_large_y_cannot_confirm_x_alignment():
@@ -733,7 +789,8 @@ def test_uncertain_large_offset_does_not_allow_pixel_calibration():
         "coarse", 100, 1.21, usable=False, validity="uncertain")))
     assert controller.armed and controller.config.pixels_per_step is None
     controller.tick(4.3)
-    assert not controller.armed and controller.config.pixels_per_step is None
+    assert controller.armed and controller._operation is None
+    assert controller.config.pixels_per_step is None
 
 
 def test_motion_feedback_preserves_uncertainty_and_both_offsets():
@@ -748,22 +805,22 @@ def test_motion_feedback_preserves_uncertainty_and_both_offsets():
     assert (value.dx, value.dy, value.validity, value.usable) == (3, -15, "uncertain", False)
 
 
-def test_increasing_error_and_three_no_progress_results_stop_alignment():
-    for errors, message in (((5, 6), "increased"), ((5, 5, 5, 5), "without progress")):
-        controller = ready(pixel_config())
-        controller.request_align()
-        controller.tick(1)
-        position = 0
-        for index, error in enumerate(errors):
-            controller.acknowledge_freshness(index + 1)
-            now = 1.3 + index * .5
-            actions = controller.tick(now, state(position), feedback=feedback(index, error, now - .01, generation=index + 1))
-            if index != len(errors) - 1:
-                assert moves(actions)
-                position -= 1
-                controller.tick(now + .1, state(position))
-        assert message in controller.message
-        assert not controller.armed
+@pytest.mark.parametrize("errors,message", [((5, 6), "increased"), ((5,) * 11, "10 moves without progress")])
+def test_increasing_error_and_ten_no_progress_results_stop_alignment_without_disarming(errors, message):
+    controller = ready(pixel_config())
+    controller.request_align()
+    controller.tick(1)
+    position = 0
+    for index, error in enumerate(errors):
+        controller.acknowledge_freshness(index + 1)
+        now = 1.3 + index * .5
+        actions = controller.tick(now, state(position), feedback=feedback(index, error, now - .01, generation=index + 1))
+        if index != len(errors) - 1:
+            assert moves(actions)
+            position -= 1
+            controller.tick(now + .1, state(position))
+    assert message in controller.message
+    assert controller.armed and controller._operation is None
 
 
 def test_manual_input_interrupts_auto_and_motor_fault_disarms():
@@ -824,6 +881,42 @@ def wait_for(predicate, timeout=2):
             return
         threading.Event().wait(.005)
     pytest.fail("Motion worker did not reach the expected state")
+
+
+@pytest.mark.parametrize("operation", ["align", "calibration"])
+def test_worker_retries_camera_failure_and_restores_motor_power_without_enable_click(operation):
+    hardware = FakeHardware()
+    barriers = []
+
+    def request(after):
+        barriers.append(after)
+        return 0 if len(barriers) == 1 else len(barriers)
+
+    worker = MotionWorker(pixel_config(), hardware=hardware, freshness_callback=request)
+    worker.set_context(CONTEXT)
+    retry = worker.align if operation == "align" else lambda: worker.calibrate(2)
+    worker.start()
+    try:
+        worker.connect_hardware()
+        wait_for(lambda: worker.output.read()[0].phase == "ready")
+        retry()
+        wait_for(lambda: "freshness barrier is unavailable" in worker.output.read()[0].message
+                 and worker.output.read()[0].phase == "ready")
+        assert worker.output.read()[0].armed
+        assert not hardware.state.enabled
+        assert not any(call[0] == "move" for call in hardware.calls)
+
+        retry()
+        wait_for(lambda: len(barriers) == 2 and time.monotonic() > barriers[-1])
+        worker.submit_feedback(feedback("retry", 2, time.monotonic(), generation=2))
+        wait_for(lambda: any(call[0] == "move" for call in hardware.calls))
+        assert worker.output.read()[0].armed and hardware.state.enabled
+        move_index = next(i for i, call in enumerate(hardware.calls) if call[0] == "move")
+        assert hardware.calls[move_index - 1][0] == "enable"
+        assert hardware.calls[move_index][1][0] == (-1 if operation == "align" else 2)
+    finally:
+        worker.stop_worker()
+        worker.join(timeout=2)
 
 
 def test_worker_keeps_all_adapter_io_off_caller_thread_and_never_moves_on_connect():

@@ -171,13 +171,15 @@ def test_same_overlap_residual_supports_correct_alignment():
     assert 0.8 < result.overlap < 1
 
 
-def test_strong_response_does_not_override_clearly_worse_alignment(monkeypatch):
+def test_worse_residual_is_diagnostic_when_response_and_overlap_pass(monkeypatch):
     image = texture()
     monkeypatch.setattr(cv2, "phaseCorrelate", lambda *args: ((35.0, 20.0), 0.95))
     _, result = measure(image, image)
     assert result.response == 0.95
-    assert result.validity == "uncertain"
-    assert any("increases" in reason for reason in result.reasons)
+    assert result.overlap >= MatchConfig().min_overlap
+    assert result.residual_after > result.residual_before
+    assert result.usable
+    assert not result.reasons
 
 
 def test_cache_configuration_content_changes_even_with_same_id():
