@@ -463,7 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._error(exc)
             return
         self.motion.set_context(context)
-        self.motion_dock.set_config(config)
+        self.motion_dock.set_config(config, preserve_input_edits=True)
         self._motion_config_changed(config)
         self.notice.setText(f"Known pixel distance saved: {pixels:+.6g} px/nudge ({scale:+.6g} px/driver step)")
 
@@ -477,7 +477,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if revision != self._motion_revision:
             self._motion_revision = revision
             if status.config_revision == self._motion_config_revision and status.config != self.motion_dock.config:
-                self.motion_dock.set_config(status.config)
+                self.motion_dock.set_config(status.config, preserve_input_edits=True)
                 self._schedule_settings_save()
         self.motion_dock.display_status(status, context)
         self.motion_controls.display_status(status, context)

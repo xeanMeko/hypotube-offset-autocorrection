@@ -51,6 +51,9 @@ def pixel_config(**kwargs):
                                           ("reference_channel", -1), ("reference_channel", 4),
                                           ("reference_channel", True), ("reference_channel", "0"),
                                           ("reference_channel", 1.0),
+                                          ("align_channel", -1), ("align_channel", 4),
+                                          ("align_channel", True), ("align_channel", "0"),
+                                          ("align_channel", 1.0),
                                           ("motor_current_ma", 100), ("step_resolution", 3),
                                           ("jog_unit", "mm"), ("pixels_per_step", 0)])
 def test_invalid_configuration_is_rejected(field, value):
@@ -59,7 +62,7 @@ def test_invalid_configuration_is_rejected(field, value):
 
 
 def test_configuration_roundtrip_and_pixel_unit_conversion():
-    config = pixel_config(jog_unit="pixels", jog_distance=5, motor_speed=40, reference_channel=3)
+    config = pixel_config(jog_unit="pixels", jog_distance=5, motor_speed=40, reference_channel=0)
     config = replace(config, pixels_per_step=-2)
     assert config.distance_steps() == 2
     assert config.speed_steps() == 40
@@ -71,7 +74,7 @@ def test_configuration_roundtrip_and_pixel_unit_conversion():
 @pytest.mark.parametrize("channel", range(4))
 @pytest.mark.parametrize("active_high", [False, True])
 def test_reference_capture_uses_raw_rising_edges_without_enabling_motion(channel, active_high):
-    controller = MotionController(MotionConfig(reference_channel=channel, active_high=active_high))
+    controller = MotionController(MotionConfig(reference_channel=channel, active_high=active_high, align_channel=None))
     controller.on_connected(state())
     high = tuple(index == channel for index in range(4))
     low = (False, False, False, False)
@@ -114,7 +117,7 @@ def test_reference_capture_cooldown_discards_edges_without_replaying_held_high()
 
 
 def test_reference_capture_disabled_and_other_channels_do_not_trigger():
-    controller = MotionController()
+    controller = MotionController(MotionConfig(align_channel=None))
     controller.on_connected(state())
     for now, inputs in enumerate(((False,) * 4, (True,) * 4) * 2):
         controller.tick(now, inputs=inputs)
@@ -130,7 +133,7 @@ def test_reference_capture_disabled_and_other_channels_do_not_trigger():
 
 
 def test_reference_channel_changes_and_reconnects_reset_baseline_but_keep_cooldown():
-    controller = MotionController(MotionConfig(reference_channel=0))
+    controller = MotionController(MotionConfig(reference_channel=0, align_channel=None))
     controller.on_connected(state())
     controller.tick(0, inputs=(False,) * 4)
     controller.tick(1, inputs=(True, False, False, False))
@@ -156,6 +159,116 @@ def test_reference_channel_changes_and_reconnects_reset_baseline_but_keep_cooldo
     controller.tick(3, inputs=(False,) * 4)
     controller.tick(4, inputs=(True,) * 4)
     assert controller.snapshot().reference_capture is None
+
+
+@pytest.mark.parametrize("field", ["left_channel", "right_channel", "reference_channel"])
+def test_align_channel_cannot_share_another_assigned_input(field):
+    with pytest.raises(ValueError, match="Align X must use a different digital input"):
+        replace(MotionConfig(), **{field: 3}).validated()
+
+
+@pytest.mark.parametrize("field", ["left_channel", "right_channel", "reference_channel"])
+def test_legacy_wiring_using_last_channel_disables_new_align_trigger(field):
+    config = MotionConfig.from_dict({field: 3})
+    assert getattr(config, field) == 3
+    assert config.align_channel is None
+    assert MotionConfig.from_dict({}).align_channel == 3
+
+
+@pytest.mark.parametrize("active_high", [False, True])
+def test_digital_align_uses_raw_edge_and_fresh_feedback_without_repeating_held_high(active_high):
+    controller = MotionController(pixel_config(active_high=active_high, jog_distance=2))
+    controller.set_context(CONTEXT)
+    controller.on_connected(state())
+    controller.on_setup_applied()
+    low = tuple(not active_high if index in (1, 2) else False for index in range(4))
+    high = (*low[:3], True)
+    controller.inputs4 = low
+    controller.arm()
+    controller.tick(0, inputs=low)
+    assert [a.kind for a in controller.tick(1, inputs=high)] == ["freshness"]
+    controller.acknowledge_freshness(1)
+    assert [a.steps for a in moves(controller.tick(1.3, inputs=high, feedback=feedback("a", 5, 1.21)))] == [-2]
+    assert [a.kind for a in controller.tick(1.4, state(-2), high)] == ["freshness"]
+    controller.acknowledge_freshness(2)
+    for now in (1.7, 1.8, 1.9):
+        controller.tick(now, state(-2), high, feedback(str(now), 0, now, generation=2))
+    assert controller._operation is None and "X aligned" in controller.message
+    assert not controller.tick(2, inputs=high)
+    controller.tick(2.1, inputs=low)
+    assert [a.kind for a in controller.tick(2.2, inputs=high)] == ["freshness"]
+
+
+@pytest.mark.parametrize("channel", [0, 3])
+def test_digital_align_requires_low_after_connect_or_channel_change(channel):
+    controller = ready(pixel_config())
+    if channel != controller.config.align_channel:
+        controller.configure(replace(controller.config, align_channel=channel))
+    high = tuple(index == channel for index in range(4))
+    assert not controller.tick(1, inputs=high)
+    assert controller._operation is None
+    controller.tick(1.1, inputs=(False,) * 4)
+    assert [a.kind for a in controller.tick(1.2, inputs=high)] == ["freshness"]
+    controller.on_disconnected()
+    controller.on_connected(state())
+    controller.on_setup_applied()
+    controller.arm()
+    assert [a.kind for a in controller.tick(2, inputs=high)] == ["enable"]
+    assert controller._operation is None
+    controller.tick(2.1, inputs=(False,) * 4)
+    assert [a.kind for a in controller.tick(2.2, inputs=high)] == ["freshness"]
+
+
+def test_digital_align_discards_busy_and_stop_edges():
+    controller = ready(pixel_config())
+    low, high = (False,) * 4, (False, False, False, True)
+    controller.tick(0, inputs=low)
+    controller.request_calibration(2)
+    controller.tick(1)
+    assert not controller.tick(1.1, inputs=high)
+    assert controller._operation == "calibration" and controller._op_started == 1
+    controller.cancel()
+    controller.tick(1.2, inputs=low)
+    controller.cancel()
+    controller.tick(1.3, inputs=high)
+    assert controller._operation is None
+    assert not controller.tick(1.4, inputs=high)
+    controller.tick(1.5, inputs=low)
+    assert [a.kind for a in controller.tick(1.6, inputs=high)] == ["freshness"]
+
+
+@pytest.mark.parametrize("missing", ["armed", "calibration", "camera", "reference", "neutral"])
+def test_digital_align_obeys_readiness_checks_and_never_replays_rejected_press(missing):
+    controller = ready(pixel_config())
+    low, high = (False,) * 4, (False, False, False, True)
+    controller.tick(0, inputs=low)
+    if missing == "armed":
+        controller.armed = False
+    elif missing == "calibration":
+        controller.configure(replace(controller.config, pixels_per_step=None))
+    elif missing == "camera":
+        controller.set_context(replace(CONTEXT, paused=True))
+    elif missing == "reference":
+        controller.set_context(replace(CONTEXT, reference_id=None))
+    else:
+        controller.set_keyboard(True, False)
+    assert not any(a.kind == "freshness" for a in controller.tick(1, inputs=high))
+    assert controller._operation is None
+    controller.armed = True
+    controller.configure(pixel_config())
+    controller.set_context(CONTEXT)
+    controller.set_keyboard(False, False)
+    controller.tick(1.1, state(), high)
+    assert controller._operation is None
+    controller.tick(1.2, inputs=low)
+    assert [a.kind for a in controller.tick(1.3, inputs=high)] == ["freshness"]
+
+
+def test_disabled_digital_align_does_not_trigger():
+    controller = ready(pixel_config(align_channel=None))
+    for now, level in enumerate((False, True, False, True)):
+        assert not controller.tick(now, inputs=(False, False, False, level))
+        assert controller._operation is None
 
 
 def test_legacy_mm_profile_converts_to_driver_steps():
@@ -306,7 +419,7 @@ def test_opposing_sources_interrupt_and_require_both_controls_released():
 
 def test_mapping_polarity_and_motor_direction_are_configurable():
     config = MotionConfig(motor_current_ma=800, left_channel=2, right_channel=3,
-                          active_high=False, invert_direction=True)
+                          align_channel=None, active_high=False, invert_direction=True)
     controller = MotionController(config)
     controller.on_connected(state())
     controller.inputs4 = (True, True, True, True)

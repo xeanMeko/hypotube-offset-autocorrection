@@ -158,35 +158,38 @@ class MotionDock(QtWidgets.QDockWidget):
             form.addRow(label, control)
         layout.addWidget(connection)
 
-        inputs = QtWidgets.QGroupBox("Joystick wiring")
+        inputs = QtWidgets.QGroupBox("Digital inputs")
         form = QtWidgets.QFormLayout(inputs)
         self.left_channel = QtWidgets.QComboBox()
         self.right_channel = QtWidgets.QComboBox()
         for control in (self.left_channel, self.right_channel):
             for channel in range(4):
                 control.addItem(f"Channel {channel}", channel)
-        self.active_high = QtWidgets.QCheckBox("Active high")
+        self.reference_channel = QtWidgets.QComboBox()
+        self.align_channel = QtWidgets.QComboBox()
+        for control in (self.reference_channel, self.align_channel):
+            control.addItem("Disabled", None)
+            for channel in range(4):
+                control.addItem(f"Channel {channel}", channel)
+        self.reference_channel.setToolTip("Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
+        self.align_channel.setToolTip("Start Align X on LOW → HIGH. Requires a live camera, reference and pixel calibration. Independent of joystick polarity.")
+        self.active_high = QtWidgets.QCheckBox("Joystick active high")
         self.invert_direction = QtWidgets.QCheckBox("Invert motor direction")
+        self.apply_inputs_button = QtWidgets.QPushButton("Apply digital inputs")
+        self.apply_inputs_button.setToolTip("Apply all channel assignments, joystick polarity and direction together.")
         self.inputs = QtWidgets.QLabel("0: —   1: —   2: —   3: —")
         form.addRow("Left / forward", self.left_channel)
         form.addRow("Right / backward", self.right_channel)
+        form.addRow("Reference capture", self.reference_channel)
+        form.addRow("Align X", self.align_channel)
         form.addRow(self.active_high)
         form.addRow(self.invert_direction)
-        form.addRow("Raw inputs", self.inputs)
-        layout.addWidget(inputs)
-
-        reference = QtWidgets.QGroupBox("Digital reference capture")
-        form = QtWidgets.QFormLayout(reference)
-        self.reference_channel = QtWidgets.QComboBox()
-        self.reference_channel.addItem("Disabled", None)
-        for channel in range(4):
-            self.reference_channel.addItem(f"Channel {channel}", channel)
-        self.reference_channel.setToolTip("Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
-        form.addRow("Reference capture channel", self.reference_channel)
-        hint = QtWidgets.QLabel("LOW → HIGH · maximum 1 capture / second")
+        form.addRow(self.apply_inputs_button)
+        hint = QtWidgets.QLabel("Reference / Align X: LOW → HIGH. Release before pressing again.")
         hint.setWordWrap(True)
         form.addRow(hint)
-        layout.addWidget(reference)
+        form.addRow("Raw inputs", self.inputs)
+        layout.addWidget(inputs)
 
         motor = QtWidgets.QGroupBox("Motor setup")
         form = QtWidgets.QFormLayout(motor)
@@ -280,10 +283,13 @@ class MotionDock(QtWidgets.QDockWidget):
             control.editingFinished.connect(self._edited)
         for control in (self.port, self.distance, self.speed, self.frequency):
             control.valueChanged.connect(self._edited)
-        for control in (self.left_channel, self.right_channel, self.reference_channel, self.resolution):
-            control.currentIndexChanged.connect(self._edited)
-        for control in (self.active_high, self.invert_direction, self.interpolation):
-            control.toggled.connect(self._edited)
+        self.resolution.currentIndexChanged.connect(self._edited)
+        self.interpolation.toggled.connect(self._edited)
+        for control in (self.left_channel, self.right_channel, self.reference_channel, self.align_channel):
+            control.currentIndexChanged.connect(self._inputs_edited)
+        for control in (self.active_high, self.invert_direction):
+            control.toggled.connect(self._inputs_edited)
+        self.apply_inputs_button.clicked.connect(self._apply_inputs)
         self.unit.currentIndexChanged.connect(self._unit_changed)
         self.setup_button.clicked.connect(self.setup_requested)
         self.arm_button.clicked.connect(self.arm_requested)
@@ -309,7 +315,32 @@ class MotionDock(QtWidgets.QDockWidget):
         self.advanced_motor_toggle.setArrowType(
             QtCore.Qt.ArrowType.DownArrow if expanded else QtCore.Qt.ArrowType.RightArrow)
 
-    def set_config(self, config):
+    def _input_values(self):
+        return dict(left_channel=self.left_channel.currentData(), right_channel=self.right_channel.currentData(),
+                    reference_channel=self.reference_channel.currentData(), align_channel=self.align_channel.currentData(),
+                    active_high=self.active_high.isChecked(), invert_direction=self.invert_direction.isChecked())
+
+    def _inputs_edited(self):
+        if not self._syncing:
+            self.apply_inputs_button.setEnabled(
+                any(value != getattr(self._config, name) for name, value in self._input_values().items()))
+
+    def _apply_inputs(self):
+        old = self._config
+        try:
+            config = replace(old, **self._input_values()).validated()
+        except ValueError as exc:
+            self.error.emit(str(exc))
+            return
+        self._config = config
+        self._inputs_edited()
+        if config != old:
+            self.config_changed.emit(config)
+
+    def set_config(self, config, *, preserve_input_edits=False):
+        input_values = self._input_values()
+        if not preserve_input_edits or not self.apply_inputs_button.isEnabled():
+            input_values = {name: getattr(config, name) for name in input_values}
         self._syncing = True
         try:
             self._config = config
@@ -317,11 +348,12 @@ class MotionDock(QtWidgets.QDockWidget):
                                    (self.digital_uid, config.digital_uid)):
                 control.setText(value)
             self.port.setValue(config.port)
-            self.left_channel.setCurrentIndex(config.left_channel)
-            self.right_channel.setCurrentIndex(config.right_channel)
-            self.reference_channel.setCurrentIndex(self.reference_channel.findData(config.reference_channel))
-            self.active_high.setChecked(config.active_high)
-            self.invert_direction.setChecked(config.invert_direction)
+            for name, value in input_values.items():
+                control = getattr(self, name)
+                if isinstance(control, QtWidgets.QComboBox):
+                    control.setCurrentIndex(control.findData(value))
+                else:
+                    control.setChecked(value)
             self.motor_current.setValue(config.motor_current_ma or 0)
             self.resolution.setCurrentIndex(self.resolution.findData(config.step_resolution))
             self.interpolation.setChecked(config.interpolation)
@@ -334,6 +366,7 @@ class MotionDock(QtWidgets.QDockWidget):
             self._effective()
         finally:
             self._syncing = False
+        self._inputs_edited()
 
     def _effective(self):
         suffix = {"driversteps": " steps", "pixels": " px"}[self._config.jog_unit]
@@ -359,28 +392,19 @@ class MotionDock(QtWidgets.QDockWidget):
             if not scale:
                 raise ValueError("Calibrate this unit before selecting it")
             config = replace(old, jog_unit=new_unit, jog_distance=old.distance_steps() * scale).validated()
-            self.set_config(config)
+            self.set_config(config, preserve_input_edits=True)
             self.config_changed.emit(config)
         except ValueError as exc:
             self.error.emit(str(exc))
-            self.set_config(old)
+            self.set_config(old, preserve_input_edits=True)
 
     def _edited(self):
         if self._syncing:
             return
         old = self._config
         try:
-            if self.left_channel.currentData() == self.right_channel.currentData():
-                other = self.right_channel if self.sender() is self.left_channel else self.left_channel
-                previous = old.left_channel if other is self.right_channel else old.right_channel
-                blocked = other.blockSignals(True)
-                other.setCurrentIndex(other.findData(previous))
-                other.blockSignals(blocked)
             config = replace(old, host=self.host.text().strip(), port=self.port.value(),
                              stepper_uid=self.stepper_uid.text().strip(), digital_uid=self.digital_uid.text().strip(),
-                             left_channel=self.left_channel.currentData(), right_channel=self.right_channel.currentData(),
-                             reference_channel=self.reference_channel.currentData(),
-                             active_high=self.active_high.isChecked(), invert_direction=self.invert_direction.isChecked(),
                              motor_current_ma=self.motor_current.value() or None, step_resolution=self.resolution.currentData(),
                              interpolation=self.interpolation.isChecked(), jog_unit=self.unit.currentData(),
                              jog_distance=self.distance.value(), motor_speed=self.speed.value(), repeat_hz=self.frequency.value())
@@ -390,7 +414,7 @@ class MotionDock(QtWidgets.QDockWidget):
                                  jog_unit="driversteps", jog_distance=1.)
             config = config.validated()
             if config.step_resolution != old.step_resolution:
-                self.set_config(config)
+                self.set_config(config, preserve_input_edits=True)
             else:
                 self._config = config
             self._effective()
@@ -398,7 +422,7 @@ class MotionDock(QtWidgets.QDockWidget):
             if config != old:
                 self.config_changed.emit(config)
         except ValueError as exc:
-            self.set_config(old)
+            self.set_config(old, preserve_input_edits=True)
             self.error.emit(str(exc))
 
     def _display_connection(self, connected):

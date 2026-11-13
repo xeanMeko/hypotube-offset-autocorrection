@@ -220,12 +220,13 @@ def test_unit_switch_preserves_driver_distance_and_motor_speed(application):
 
 
 def test_reference_channel_selector_supports_all_channels_and_disabled(application):
-    dock = MotionDock()
+    dock = MotionDock(MotionConfig(align_channel=None))
     changes = []
     dock.config_changed.connect(lambda config: changes.append(config.reference_channel))
     assert dock.reference_channel.currentData() is None
     for channel in (*range(4), None):
         dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(channel))
+        dock.apply_inputs_button.click()
         assert dock.config.reference_channel == channel
     assert changes == [0, 1, 2, 3, None]
     dock.close()
@@ -237,6 +238,7 @@ def test_digital_input_captures_reference_through_worker_and_gui(axis_window, ap
     window.frames.publish(frame)
     pump(application, lambda: window.latest_frame is frame, timeout=2, required=True)
     window.motion_dock.reference_channel.setCurrentIndex(window.motion_dock.reference_channel.findData(0))
+    window.motion_dock.apply_inputs_button.click()
     pump(application, lambda: window._motion_status.config_revision == window._motion_config_revision,
          timeout=2, required=True)
     assert window.reference is None
@@ -561,16 +563,77 @@ def test_resolution_change_clears_scales_and_visible_units(application):
     dock.close()
 
 
-def test_rejected_edit_reverts_and_channel_swaps_are_atomic(application):
+def test_digital_inputs_apply_together_and_allow_complete_channel_swaps(application):
+    dock = MotionDock()
+    changes = []
+    dock.config_changed.connect(changes.append)
+    assert dock.align_channel.currentData() == 3
+    assert not dock.apply_inputs_button.isEnabled()
+    old = dock.config
+    # Intermediate assignments can overlap without changing the live wiring.
+    dock.left_channel.setCurrentIndex(1)
+    dock.right_channel.setCurrentIndex(3)
+    dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(0))
+    dock.align_channel.setCurrentIndex(dock.align_channel.findData(2))
+    dock.active_high.setChecked(False)
+    dock.invert_direction.setChecked(False)
+    assert dock.config == old and changes == []
+    assert dock.apply_inputs_button.isEnabled()
+    dock.apply_inputs_button.click()
+    assert len(changes) == 1
+    assert (dock.config.left_channel, dock.config.right_channel,
+            dock.config.reference_channel, dock.config.align_channel) == (1, 3, 0, 2)
+    assert not dock.config.active_high and not dock.config.invert_direction
+    assert not dock.apply_inputs_button.isEnabled()
+    dock.close()
+
+
+def test_invalid_channel_mapping_stays_pending_until_corrected(application):
+    dock = MotionDock()
+    errors = []
+    changes = []
+    dock.error.connect(errors.append)
+    dock.config_changed.connect(changes.append)
+    old = dock.config
+    dock.left_channel.setCurrentIndex(1)
+    dock.apply_inputs_button.click()
+    assert errors and "different digital inputs" in errors[-1]
+    assert dock.config == old and changes == []
+    assert dock.left_channel.currentData() == 1
+    assert dock.apply_inputs_button.isEnabled()
+    dock.right_channel.setCurrentIndex(2)
+    dock.align_channel.setCurrentIndex(dock.align_channel.findData(2))
+    dock.apply_inputs_button.click()
+    assert "Align X must use a different digital input" in errors[-1]
+    assert dock.config == old and changes == []
+    dock.align_channel.setCurrentIndex(dock.align_channel.findData(None))
+    dock.apply_inputs_button.click()
+    assert len(changes) == 1 and dock.config.align_channel is None
+    dock.close()
+
+
+def test_other_edits_and_status_sync_preserve_pending_input_mapping(application):
     dock = MotionDock()
     errors = []
     dock.error.connect(errors.append)
+    dock.left_channel.setCurrentIndex(1)
+    dock.right_channel.setCurrentIndex(2)
+    dock.frequency.setValue(3)
+    assert dock.config.repeat_hz == 3
+    assert (dock.config.left_channel, dock.config.right_channel) == (2, 1)
+    dock.resolution.setCurrentIndex(dock.resolution.findData(16))
     dock.distance.setValue(.5)
     assert errors and dock.distance.value() == 1
     assert dock.config.jog_distance == 1
-    dock.left_channel.setCurrentIndex(1)
+    dock.set_config(replace(dock.config, pixels_per_step=2), preserve_input_edits=True)
+    dock.unit.setCurrentIndex(dock.unit.findData("pixels"))
+    assert dock.left_channel.currentData() == 1 and dock.right_channel.currentData() == 2
+    assert (dock.config.left_channel, dock.config.right_channel) == (2, 1)
+    dock.apply_inputs_button.click()
     assert dock.config.left_channel == 1 and dock.config.right_channel == 2
-    assert dock.right_channel.currentData() == 2
+    dock.left_channel.setCurrentIndex(0)
+    dock.set_config(MotionConfig())  # Loading a profile replaces pending edits.
+    assert dock.left_channel.currentData() == 2 and not dock.apply_inputs_button.isEnabled()
     dock.close()
 
 
@@ -660,7 +723,10 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
         pump(application, lambda: window.last_pair.result.validity == "uncertain",
              timeout=2, required=True)
     pump(application, lambda: window.motion_controls.align_button.isEnabled(), timeout=2, required=True)
-    window.motion_controls.align_button.click()
+    if calibration_reference == "none":
+        hardware.inputs = (False, False, False, True)
+    else:
+        window.motion_controls.align_button.click()
     pump(application, lambda: "X aligned" in window._motion_status.message, timeout=8, required=True)
     assert abs(window.last_pair.result.dx) <= window.tolerance.value()
     assert window.last_pair.result.dy > 2

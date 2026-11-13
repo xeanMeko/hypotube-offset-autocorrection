@@ -29,6 +29,7 @@ class MotionConfig:
     left_channel: int = 2
     right_channel: int = 1
     reference_channel: int | None = None
+    align_channel: int | None = 3
     active_high: bool = True
     invert_direction: bool = True
     motor_current_ma: int | None = 800
@@ -57,6 +58,11 @@ class MotionConfig:
             raise ValueError("Left and right must use different digital inputs")
         if self.reference_channel is not None and (type(self.reference_channel) is not int or self.reference_channel not in range(4)):
             raise ValueError("Reference capture channel must be disabled or between 0 and 3")
+        if self.align_channel is not None:
+            if type(self.align_channel) is not int or self.align_channel not in range(4):
+                raise ValueError("Align X channel must be disabled or between 0 and 3")
+            if self.align_channel in (self.left_channel, self.right_channel, self.reference_channel):
+                raise ValueError("Align X must use a different digital input from left, right and reference capture")
         if any(type(v) is not bool for v in (self.active_high, self.invert_direction, self.interpolation)):
             raise ValueError("Input polarity, direction and interpolation must be booleans")
         if self.motor_current_ma is not None and (type(self.motor_current_ma) is not int or not 360 <= self.motor_current_ma <= 1640):
@@ -116,6 +122,13 @@ class MotionConfig:
         # Retired jog_speed values depended on the nudge unit. Old profiles
         # start with the default motor speed in driver steps/s instead.
         kwargs = {key: item for key, item in value.items() if key in names}
+        if "align_channel" not in kwargs and cls.align_channel in (
+                kwargs.get("left_channel", cls.left_channel),
+                kwargs.get("right_channel", cls.right_channel),
+                kwargs.get("reference_channel", cls.reference_channel)):
+            # Preserve existing wiring when an older profile already uses
+            # channel 3 for another action.
+            kwargs["align_channel"] = None
         if kwargs.get("jog_unit") == "mm":
             # Older profiles stored physical units. Preserve their effective
             # motor move while retiring the millimetre setting.
@@ -250,6 +263,7 @@ class MotionController:
         self.reference_capture: ReferenceCaptureRequest | None = None
         self._reference_level: bool | None = None
         self._last_reference_capture_at: float | None = None
+        self._align_level: bool | None = None
         self.keyboard = (False, False)
         self._saw_conflict = False
         self._manual_activity = False
@@ -295,6 +309,8 @@ class MotionController:
         if config.reference_channel != old.reference_channel:
             self._reference_level = None
             self.reference_capture = None
+        if config.align_channel != old.align_channel:
+            self._align_level = None
         self.config = config
         self.config_revision = revision
         if setup_changed:
@@ -350,6 +366,7 @@ class MotionController:
         self.connected = True
         self._reference_level = None
         self.reference_capture = None
+        self._align_level = None
         self.state = state
         self.setup_applied = False
         self.armed = False
@@ -366,6 +383,7 @@ class MotionController:
         self.connected = self.setup_applied = self.armed = False
         self._reference_level = None
         self.reference_capture = None
+        self._align_level = None
         self._operation = self._pending_operation = self._move = None
         self._actions.clear()
         self._stopping = False
@@ -652,6 +670,18 @@ class MotionController:
             self._last_reference_capture_at = now
             self.reference_capture = ReferenceCaptureRequest(channel, now, self.config_revision)
 
+    def _read_align_input(self) -> None:
+        channel = self.config.align_channel
+        if channel is None:
+            return
+        level = self.inputs4[channel]
+        rising = self._align_level is False and level
+        # Consume busy/blocked presses too, so a held input cannot restart
+        # an operation after completion, Stop, or a failed readiness check.
+        self._align_level = level
+        if rising and not (self._operation or self._pending_operation or self._move or self._stopping):
+            self.request_align()
+
     def tick(self, now: float, hardware_state: HardwareState | None = None,
              inputs: tuple[bool, bool, bool, bool] | None = None,
              feedback: MotionFeedback | None = None) -> tuple[MotionAction, ...]:
@@ -677,6 +707,7 @@ class MotionController:
             return ()
         if inputs is not None:
             self._read_reference_input(now)
+            self._read_align_input()
         if self.state.fault and (self.armed or self._move or self._operation):
             self.cancel(f"Motor fault: {self.state.fault}", disarm=True)
         if self.setup_applied and self.state.step_resolution != self.config.step_resolution:

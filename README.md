@@ -335,11 +335,16 @@ the connection error. Camera-only and Demo use do not require Tinkerforge bindin
    movement disabled. Driver steps refer to the selected microstep size, not
    necessarily full motor steps.
 2. Channel **2** means **left / forward** (positive driver steps) and channel **1**
-   means **right / backward** (negative driver steps); channels **0/3** are available
-   for other inputs.
+   means **right / backward** (negative driver steps). The last input, channel **3**,
+   starts **Align X**; channel **0** is available for reference capture.
    Watch all four **Raw inputs** while testing your joystick, then
-   change the left/right channel selections and **Active high** polarity as
-   needed. **Invert motor direction** swaps which motor direction means right.
+   set left, right, reference capture, and Align X together under **Linear Axis →
+   Digital inputs**. Click **Apply digital inputs** to apply the complete mapping,
+   joystick polarity, and direction together. Selections stay pending until applied,
+   so you can swap channels without changing live wiring one selection at a time.
+   **Joystick active high** sets joystick polarity; **Invert motor direction** swaps
+   which motor direction means right. Align X must use a separate input from the
+   other actions. Both reference capture and Align X can be disabled.
 3. Set **Distance / nudge** and **Repeat frequency**. The defaults
    are **1 driver step** and **2 Hz**. Motor speed defaults to **200 driver steps/s**;
    adjust it under **Motor setup → Advanced motor settings** if needed.
@@ -359,8 +364,8 @@ the connection error. Camera-only and Demo use do not require Tinkerforge bindin
    stop movement and require both to return to neutral. After Stop or reconnect,
    return to neutral before pressing again.
 
-Under **Digital reference capture**, set **Reference capture channel** to one of
-channels **0–3** (or **Disabled**, the default). With hardware connected, a raw
+Under **Digital inputs**, set **Reference capture** to an available channel
+(or **Disabled**, the default), then click **Apply digital inputs**. With hardware connected, a raw
 **LOW → HIGH** transition captures the current reference, with at least **one
 second** between digital captures. Holding HIGH does not repeat; edges during
 the cooldown are discarded. Connecting or selecting an already-HIGH input does
@@ -426,7 +431,17 @@ steps/s**. Changes made to the new advanced motor speed setting are saved with p
 ### Mechanical X alignment
 
 With valid pixel calibration, a fixed reference, and neutral manual controls,
-click **Align X** on the main screen. Each correction is capped at the current nudge distance and
+click **Align X** on the main screen or press the button wired to digital input
+**3** (the default **Align X** channel). The digital trigger starts once per raw
+**LOW → HIGH** transition, independently of joystick polarity. Holding HIGH does
+not repeat. Connecting or assigning an already-HIGH input does not start alignment;
+the input must first be observed LOW. Presses during a move, calibration, alignment,
+or Stop are discarded, as are presses when the camera, reference, calibration, or
+motor is not ready. Release and press again to retry. Change or disable the channel
+under **Digital inputs**, then click **Apply digital inputs**. Saved profiles retain
+the selection. Older profiles that already use channel 3 for another action keep
+that wiring and start with the new Align X trigger disabled.
+Each correction is capped at the current nudge distance and
 uses **200 driver steps/s** unless changed under **Advanced motor settings**.
 Distance / nudge is the main alignment adjustment. After each move, the controller waits at least
 200 ms (extended for exposure/frame timing), refreshes camera queues, and uses

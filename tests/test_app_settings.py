@@ -54,8 +54,10 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock.left_channel.setCurrentIndex(0)
         dock.right_channel.setCurrentIndex(3)
         dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(1))
+        dock.align_channel.setCurrentIndex(dock.align_channel.findData(2))
         dock.active_high.setChecked(False)
         dock.invert_direction.setChecked(False)
+        dock.apply_inputs_button.click()
         dock.motor_current.setValue(900)
         dock.motor_current.editingFinished.emit()
         dock.resolution.setCurrentIndex(dock.resolution.findData(16))
@@ -82,6 +84,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         config, tolerance, hz, camera, motion = load_profile(path, include_motion=True)
         assert motion["left_channel"] == 0 and motion["right_channel"] == 3
         assert motion["reference_channel"] == 1
+        assert motion["align_channel"] == 2
         assert motion["motor_current_ma"] == 900 and motion["step_resolution"] == 16
         assert config.scale == .5 and tolerance == 2.5 and hz == 3
         assert camera == {"fps": 21, "exposure_ms": 5.5}
@@ -96,6 +99,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock = restored.motion_dock
         assert dock.config.left_channel == 0 and dock.config.right_channel == 3
         assert dock.config.reference_channel == 1 and dock.reference_channel.currentData() == 1
+        assert dock.config.align_channel == 2 and dock.align_channel.currentData() == 2
         assert not dock.config.active_high and not dock.config.invert_direction
         assert dock.config.motor_current_ma == 900 and dock.config.step_resolution == 16
         assert (dock.config.jog_distance, dock.config.motor_speed, dock.config.repeat_hz) == (7, 125, 4)
