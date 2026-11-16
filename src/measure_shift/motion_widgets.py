@@ -80,6 +80,8 @@ class AxisKeyboardFilter(QtCore.QObject):
 class MotionControls(QtCore.QObject):
     """Everyday axis actions and status readout."""
 
+    ENABLE_DIRECT_ALIGNMENT_EXPERIMENT = True  # Set False to hide the extra test button.
+
     def __init__(self, toolbar):
         super().__init__(toolbar)
         self.connect_button = QtWidgets.QPushButton("Connect hardware")
@@ -92,17 +94,28 @@ class MotionControls(QtCore.QObject):
         self.align_button = QtWidgets.QPushButton("Align X")
         self.align_button.setObjectName("alignXButton")
         self.align_button.setToolTip("Align X to the reference using the saved pixel calibration and current tolerance.")
+        # Experimental entry point; keep separate from normal/digital Align X.
+        self.direct_align_button = QtWidgets.QPushButton("Align X direct")
+        self.direct_align_button.setObjectName("alignXDirectButton")
+        self.direct_align_button.setToolTip(
+            "Experimental: align X without pixel calibration. Start with 4 driver steps to take up slack, "
+            "double while improving, reverse when error grows, and halve after crossing the target. "
+            "Move limit: the larger of 4 driver steps and the current nudge distance. "
+            "STOP or manual input cancels.")
         self.stop_button = QtWidgets.QPushButton("STOP")
         self.stop_button.setObjectName("axisStopButton")
-        for button in (self.connect_button, self.calibrate_button, self.align_button, self.stop_button):
-            toolbar.addWidget(button)
+        for button in (self.connect_button, self.calibrate_button, self.align_button,
+                       self.direct_align_button, self.stop_button):
+            action = toolbar.addWidget(button)
+            if button is self.direct_align_button:
+                action.setVisible(self.ENABLE_DIRECT_ALIGNMENT_EXPERIMENT)
         self.status = QtWidgets.QLabel("Disconnected · motion disabled")
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.status.setWordWrap(False)
         self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         self.set_calibration_move(100)
-        for button in (self.calibrate_button, self.align_button, self.stop_button):
+        for button in (self.calibrate_button, self.align_button, self.direct_align_button, self.stop_button):
             button.setEnabled(False)
 
     def set_calibration_move(self, steps):
@@ -130,6 +143,7 @@ class MotionControls(QtCore.QObject):
         idle = status.phase in ("idle", "ready", "aligned", "stopped")
         self.calibrate_button.setEnabled(status.armed and idle and context.live_camera_ready)
         self.align_button.setEnabled(status.armed and idle and context.camera_ready and scale is not None)
+        self.direct_align_button.setEnabled(status.armed and idle and context.camera_ready)
 
 
 class MotionDock(QtWidgets.QDockWidget):

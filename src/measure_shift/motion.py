@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Callable
 
+from .direct_alignment import DirectXSearch
 from .motion_hardware import HardwareState, TinkerforgeMotionHardware
 from .workers import LatestValue, MeasurementWorker
 
@@ -291,6 +292,7 @@ class MotionController:
         self._confirmations = 0
         self._previous_error: float | None = None
         self._no_progress = 0
+        self._direct_alignment: DirectXSearch | None = None
         self._stopping = False
 
     def configure(self, config: MotionConfig, revision: int = 0) -> None:
@@ -436,6 +438,9 @@ class MotionController:
     def request_align(self):
         self._pending_operation = ("align", 0)
 
+    def request_align_direct(self):
+        self._pending_operation = ("align_direct", 0)
+
     def request_calibration(self, steps: int):
         if type(steps) is not int or steps == 0 or abs(steps) > 2_147_483_647:
             raise ValueError("Calibration needs a nonzero signed number of driver steps")
@@ -445,6 +450,7 @@ class MotionController:
         # Recoverable operation failures stop motion without requiring another
         # Enable click. Hardware faults and setup changes explicitly disarm.
         self._operation = self._pending_operation = None
+        self._direct_alignment = None
         self._feedback_retry_started_at = None
         self._confirmations = 0
         self._neutral_required = True
@@ -496,7 +502,7 @@ class MotionController:
         if not self.context.live_camera_ready:
             self.message = "A running, unpaused IDS or Basler camera is required"
             return
-        if kind == "align" and not self.context.camera_ready:
+        if kind in {"align", "align_direct"} and not self.context.camera_ready:
             self.message = "A running, unpaused IDS or Basler camera and a reference are required"
             return
         if kind == "align" and self.config.pixels_per_step is None:
@@ -508,9 +514,11 @@ class MotionController:
         self._calibration_steps = steps
         self._corrections = self._confirmations = self._no_progress = 0
         self._previous_error = None
+        self._direct_alignment = (DirectXSearch(max(DirectXSearch.INITIAL_STEPS, self.config.distance_steps()))
+                                  if kind == "align_direct" else None)
         self._feedback = None
         self._neutral_required = True
-        self.phase = "aligning" if kind == "align" else "calibrating"
+        self.phase = "calibrating" if kind == "calibration" else "aligning"
         self.message = "Waiting for a fresh, settled camera measurement"
         self._freshness(now)
 
@@ -522,7 +530,7 @@ class MotionController:
         # Permit uncertain estimates for coarse alignment only. Calibration
         # still needs valid measurements to establish the motor's pixel scale.
         threshold = max(self.UNCERTAIN_ALIGNMENT_MIN_OFFSET_PX, self.context.tolerance_px)
-        return (self._operation == "align" and feedback.validity == "uncertain"
+        return (self._operation in {"align", "align_direct"} and feedback.validity == "uncertain"
                 and max(abs(feedback.dx), abs(feedback.dy)) > threshold)
 
     def _retry_operation_feedback(self, now, reason):
@@ -550,7 +558,7 @@ class MotionController:
                 self.cancel("Fresh camera measurement timed out")
             return None
         if not self._feedback_usable(feedback):
-            if (self._operation == "align" and feedback.validity == "uncertain"
+            if (self._operation in {"align", "align_direct"} and feedback.validity == "uncertain"
                     and math.isfinite(feedback.dx) and math.isfinite(feedback.dy)):
                 self._retry_operation_feedback(now, "Camera match is uncertain at low offset; a valid match is required")
             else:
@@ -627,10 +635,14 @@ class MotionController:
             self.message = f"Confirming X alignment ({self._confirmations}/3)"
             if self._confirmations >= 3:
                 self._operation = None
+                self._direct_alignment = None
                 self.phase = "ready"
                 self.message = "X aligned · Y is unchanged by this axis"
             return
         self._confirmations = 0
+        if self._operation == "align_direct":
+            self._process_direct_alignment(feedback, now)
+            return
         if self._previous_error is not None:
             allowance = max(1.0, self.context.tolerance_px * .1)
             if error > self._previous_error + allowance:
@@ -654,6 +666,21 @@ class MotionController:
         self._stage = "moving"
         quality = " · uncertain match at large offset" if not feedback.usable else ""
         self.message = f"Aligning X · correction {self._corrections}{quality}"
+        self._start_move(steps, now, "align")
+
+    def _process_direct_alignment(self, feedback, now):
+        if self._corrections >= self.MAX_CORRECTIONS:
+            self.cancel("Direct X alignment reached its 100 correction limit")
+            return
+        try:
+            steps = self._direct_alignment.next_steps(self.state.position, feedback.dx)
+        except ValueError as exc:
+            self.cancel(str(exc))
+            return
+        self._corrections += 1
+        self._stage = "moving"
+        quality = " · uncertain match at large offset" if not feedback.usable else ""
+        self.message = f"Aligning X directly · correction {self._corrections} ({steps:+d} steps){quality}"
         self._start_move(steps, now, "align")
 
     def _read_reference_input(self, now: float) -> None:
@@ -881,6 +908,7 @@ class MotionWorker(threading.Thread):
             self._stop_requested.set()
             self._commands.append(("stop", None))
     def align(self): self._enqueue("align")
+    def align_direct(self): self._enqueue("align_direct")
     def calibrate(self, steps: int):
         if type(steps) is not int or steps == 0 or abs(steps) > 2_147_483_647:
             raise ValueError("Calibration needs a nonzero signed number of driver steps")
@@ -976,6 +1004,7 @@ class MotionWorker(threading.Thread):
                 if not any(command[0] == "stop" for command in self._commands):
                     self._stop_requested.clear()
         elif name == "align": controller.request_align()
+        elif name == "align_direct": controller.request_align_direct()
         elif name == "calibrate": controller.request_calibration(value)
 
     def run(self):

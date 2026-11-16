@@ -430,6 +430,24 @@ steps/s**. Changes made to the new advanced motor speed setting are saved with p
 
 ### Mechanical X alignment
 
+The extra **Align X direct** toolbar button is experimental and works without
+pixel calibration. With a live camera, reference, and released manual controls,
+it starts with **4 driver steps** to take up slack, doubles the move while error
+improves (or no image movement is measurable yet), and reverses/shrinks it if
+error grows. After X crosses the target, it halves on further crossings, down to
+one driver step, and keeps moving through slack after reversals. Every move is
+capped at the larger of **4 driver steps** and **Distance / nudge**; set the nudge
+above 4 driver steps to allow growth.
+It uses the same motor speed, settled/fresh feedback, tolerance confirmations,
+STOP, manual cancellation, and 100-correction / 60-second limits as normal
+alignment. It stops if motor position does not change, five maximum-size moves
+make no progress, or a one-step target crossing cannot meet the tolerance.
+It does not save or change pixel calibration, nudge settings, or the
+digital Align X trigger. The search lives in `direct_alignment.py`, with its
+own toolbar button and worker command so the experiment can be removed separately.
+To hide the test button immediately, set
+`MotionControls.ENABLE_DIRECT_ALIGNMENT_EXPERIMENT = False` in `motion_widgets.py`.
+
 With valid pixel calibration, a fixed reference, and neutral manual controls,
 click **Align X** on the main screen or press the button wired to digital input
 **3** (the default **Align X** channel). The digital trigger starts once per raw

@@ -15,7 +15,7 @@ from PySide6 import QtWidgets, QtCore, QtGui, QtTest
 from measure_shift.app import MainWindow
 from measure_shift.motion import MotionConfig, MotionContext, MotionStatus, ReferenceCaptureRequest
 from measure_shift.motion_hardware import HardwareState
-from measure_shift.motion_widgets import AxisKeyboardFilter, MotionDock
+from measure_shift.motion_widgets import AxisKeyboardFilter, MotionControls, MotionDock
 from measure_shift.models import FramePacket
 
 
@@ -323,6 +323,34 @@ def test_main_calibration_button_uses_the_test_move_from_axis_settings(applicati
         application.processEvents()
 
 
+def test_direct_alignment_button_needs_camera_and_reference_but_no_calibration(application):
+    toolbar = QtWidgets.QToolBar()
+    controls = MotionControls(toolbar)
+    context = MotionContext(source_id="ids:1", source_kind="IDS", shape=(32, 48),
+                            reference_id="ref", config_id="match", connected=True)
+    status = MotionStatus(armed=True, phase="ready")
+    controls.display_status(status, context)
+    assert controls.direct_align_button.isEnabled()
+    assert not controls.align_button.isEnabled()
+    for blocked in (replace(context, reference_id=None), replace(context, paused=True),
+                    replace(context, source_kind="demo")):
+        controls.display_status(status, blocked)
+        assert not controls.direct_align_button.isEnabled()
+    for blocked in (replace(status, phase="aligning"), replace(status, armed=False)):
+        controls.display_status(blocked, context)
+        assert not controls.direct_align_button.isEnabled()
+
+
+def test_direct_alignment_experiment_can_be_hidden_with_one_switch(application, monkeypatch):
+    monkeypatch.setattr(MotionControls, "ENABLE_DIRECT_ALIGNMENT_EXPERIMENT", False)
+    toolbar = QtWidgets.QToolBar()
+    controls = MotionControls(toolbar)
+    action = next(action for action in toolbar.actions()
+                  if isinstance(action, QtWidgets.QWidgetAction)
+                  and action.defaultWidget() is controls.direct_align_button)
+    assert not action.isVisible()
+
+
 def test_main_axis_controls_work_with_settings_closed(application):
     hardware = FakeHardware()
     window = MainWindow(motion_hardware=hardware)
@@ -340,13 +368,14 @@ def test_main_axis_controls_work_with_settings_closed(application):
         window.resize(1100, 760)
         application.processEvents()
         for button in (controls.connect_button, controls.calibrate_button,
-                       controls.align_button, controls.stop_button):
+                       controls.align_button, controls.direct_align_button, controls.stop_button):
             assert button.isVisible()
             assert toolbar.isAncestorOf(button)
             assert not button.visibleRegion().isEmpty()
         assert not window.tools_button.visibleRegion().isEmpty()
         assert not controls.calibrate_button.isEnabled()
         assert not controls.align_button.isEnabled()
+        assert not controls.direct_align_button.isEnabled()
         pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
              timeout=3, required=True)
         assert controls.connect_button.isCheckable()
@@ -361,6 +390,7 @@ def test_main_axis_controls_work_with_settings_closed(application):
         assert not window.tools_button.visibleRegion().isEmpty()
         assert not controls.calibrate_button.isEnabled()  # No live camera.
         assert not controls.align_button.isEnabled()
+        assert not controls.direct_align_button.isEnabled()
         assert "READY" in controls.status.text()
         controls.stop_button.click()
         pump(application, lambda: "stop" in hardware.calls, timeout=3, required=True)
@@ -733,6 +763,54 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
     assert window.state.text() == "OUTSIDE TOLERANCE"
     assert camera.freshen_count >= 4
     assert not window.motion_dock.isVisible()
+
+
+@pytest.mark.parametrize("gain", [.5, -.5])
+def test_real_app_direct_alignment_without_calibration(axis_window, application, monkeypatch, gain):
+    import measure_shift.app as app_module
+    window, hardware = axis_window
+    rng = np.random.default_rng(713)
+    reference = cv2.GaussianBlur(rng.integers(20, 235, (128, 160), dtype=np.uint8), (3, 3), 0)
+
+    class Camera:
+        name = "Simulated direct alignment camera"
+        device_identity = "direct-serial"
+        ended = False
+        freshen_count = 0
+
+        def open(self): pass
+        def close(self): pass
+        def controls(self): return {}
+        def read(self, timeout_ms=200):
+            time.sleep(.01)
+            dx = 12 + hardware.state.position * gain
+            return cv2.warpAffine(reference, np.float32([[1, 0, dx], [0, 1, 4]]), (160, 128))
+
+        def discard_pending_frames(self):
+            self.freshen_count += 1
+
+    camera = Camera()
+    monkeypatch.setattr(app_module, "create_source", lambda *args, **kwargs: camera)
+    window.start_source("IDS", identifier="simulated")
+    pump(application, lambda: window.latest_frame is not None, timeout=3, required=True)
+    window.set_reference(FramePacket.from_array(reference))
+    window.motion_dock.distance.setValue(16)
+    saved_reference = window.reference
+    pump(application, lambda: window.motion_controls.direct_align_button.isEnabled(), timeout=3, required=True)
+    assert not window.motion_controls.align_button.isEnabled()
+    original_config = window.motion_dock.config
+    assert original_config.pixels_per_step is None
+    window.motion_controls.direct_align_button.click()
+    pump(application, lambda: window._motion_status.phase == "aligning", timeout=3, required=True)
+    assert not window.motion_controls.direct_align_button.isEnabled()
+    pump(application, lambda: "X aligned" in window._motion_status.message, timeout=8, required=True)
+    assert hardware.moves[0] == (4, 200)
+    assert all(abs(steps) <= 16 for steps, _ in hardware.moves)
+    assert abs(window.last_pair.result.dx) <= window.tolerance.value()
+    assert window.last_pair.result.dy > 2
+    assert window.reference is saved_reference
+    assert window.motion_dock.config == original_config
+    assert camera.freshen_count > 1
 
 
 def test_loading_profile_disconnects_hardware_without_activation(axis_window, application, monkeypatch, tmp_path):

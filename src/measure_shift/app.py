@@ -313,6 +313,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.motion_dock.test_steps.valueChanged.connect(self.motion_controls.set_calibration_move)
         self.motion_dock.known_distance_requested.connect(self._set_known_pixel_distance)
         self.motion_controls.align_button.clicked.connect(self._align_motion)
+        self.motion_controls.direct_align_button.clicked.connect(self._align_motion_direct)
         self.motion_dock.error.connect(self._error)
 
         file_menu = self.menuBar().addMenu("File")
@@ -445,6 +446,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _align_motion(self):
         self.motion.set_context(self._axis_context())
         self.motion.align()
+
+    def _align_motion_direct(self):
+        self.motion.set_context(self._axis_context())
+        self.motion.align_direct()
 
     def _set_known_pixel_distance(self, pixels):
         context = self._axis_context()
