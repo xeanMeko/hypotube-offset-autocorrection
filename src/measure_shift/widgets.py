@@ -66,6 +66,7 @@ class TimedPlotWidget(pg.PlotWidget):
 
 class ImagePane(QtWidgets.QWidget):
     region_changed = QtCore.Signal(object)
+    crosshair_moved = QtCore.Signal(object)
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -95,6 +96,8 @@ class ImagePane(QtWidgets.QWidget):
         self._region = None
         self._auto_done = False
         self._crosshair_visible = False
+        self._crosshair_movable = False
+        self._crosshair_position = None
         self.crosshair_horizontal = pg.PlotCurveItem(pen=pg.mkPen("#66d9ef", width=1, cosmetic=True))
         self.crosshair_vertical = pg.PlotCurveItem(pen=pg.mkPen("#66d9ef", width=1, cosmetic=True))
         for line in (self.crosshair_horizontal, self.crosshair_vertical):
@@ -104,6 +107,7 @@ class ImagePane(QtWidgets.QWidget):
             self.plot.addItem(line, ignoreBounds=True)
             line.hide()
         self._mouse = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=20, slot=self._hover)
+        self.plot.scene().sigMouseClicked.connect(self._place_crosshair)
         self.arrow_line = pg.PlotDataItem(pen=pg.mkPen("#ffcd66", width=2))
         self.arrow = pg.ArrowItem(angle=0, headLen=14, tailLen=0, brush="#ffcd66", pen="#ffcd66")
         self.plot.addItem(self.arrow_line)
@@ -181,14 +185,48 @@ class ImagePane(QtWidgets.QWidget):
 
     def set_crosshair_visible(self, visible: bool) -> None:
         self._crosshair_visible = visible
+        if not visible:
+            self.set_crosshair_movable(False)
         self._update_crosshair()
+
+    @property
+    def crosshair_position(self) -> tuple[float, float] | None:
+        """Native image coordinates, or None to follow the image center."""
+        return self._crosshair_position
+
+    def set_crosshair_position(self, position: tuple[float, float] | None) -> None:
+        self._crosshair_position = position
+        self._update_crosshair()
+
+    def set_crosshair_movable(self, movable: bool) -> None:
+        self._crosshair_movable = movable and self._crosshair_visible
+        if self._crosshair_movable:
+            self.plot.viewport().setCursor(QtCore.Qt.CursorShape.CrossCursor)
+        else:
+            self.plot.viewport().unsetCursor()
+
+    def _place_crosshair(self, event) -> None:
+        if (not self._crosshair_movable or self.array is None
+                or event.button() != QtCore.Qt.MouseButton.LeftButton
+                or not self.view.sceneBoundingRect().contains(event.scenePos())):
+            return
+        point = self.image.mapFromScene(event.scenePos())
+        x, y = point.x(), point.y()
+        h, w = self.array.shape[:2]
+        if 0 <= x < w and 0 <= y < h:
+            self.set_crosshair_position((x, y))
+            self.crosshair_moved.emit(self._crosshair_position)
 
     def _update_crosshair(self) -> None:
         visible = self._crosshair_visible and self.array is not None
         if visible:
             h, w = self.array.shape[:2]
-            self.crosshair_horizontal.setData([0, w], [h / 2, h / 2])
-            self.crosshair_vertical.setData([w / 2, w / 2], [0, h])
+            x, y = self._crosshair_position or (w / 2, h / 2)
+            # Keep a saved native position when switching image sizes, while
+            # keeping the rendered guides inside a smaller image.
+            x, y = min(x, w - .5), min(y, h - .5)
+            self.crosshair_horizontal.setData([0, w], [y, y])
+            self.crosshair_vertical.setData([x, x], [0, h])
         self.crosshair_horizontal.setVisible(visible)
         self.crosshair_vertical.setVisible(visible)
 

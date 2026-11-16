@@ -135,6 +135,63 @@ def test_close_flushes_an_edit_before_autosave_timer_fires(application, tmp_path
     assert not window.settings_timer.isActive()
 
 
+@pytest.mark.parametrize("save_position", [False, True])
+def test_crosshair_save_is_explicit_and_restores_locked(application, tmp_path, save_position):
+    path = tmp_path / "settings.json"
+    window = MainWindow(settings_path=path)
+    try:
+        window.crosshair_toggle.setChecked(True)
+        window.move_crosshair_toggle.setChecked(True)
+        window._set_crosshair_position((123.5, 45.5))
+        if save_position:
+            window.save_crosshair_button.click()
+            assert not window.move_crosshair_toggle.isChecked()
+            assert json.loads(path.read_text())["ui"]["crosshair_position"] == [123.5, 45.5]
+        window.move_crosshair_toggle.setChecked(True)
+        window._set_crosshair_position((234.5, 67.5))
+        # Unrelated autosaves and closing must not commit an unsaved move.
+        window.tolerance.setValue(3)
+        window._save_startup_settings()
+    finally:
+        window.close()
+
+    restored = MainWindow(settings_path=path)
+    try:
+        assert restored.crosshair_toggle.isChecked()
+        assert not restored.move_crosshair_toggle.isChecked()
+        expected = (123.5, 45.5) if save_position else None
+        assert restored.reference_pane.crosshair_position == expected
+        assert restored.live_pane.crosshair_position == expected
+        restored.center_crosshair_button.click()
+        restored.save_crosshair_button.click()
+        assert json.loads(path.read_text())["ui"]["crosshair_position"] is None
+    finally:
+        restored.close()
+
+
+def test_crosshair_saved_position_roundtrips_in_settings_profile(application, tmp_path, monkeypatch):
+    path = tmp_path / "profile.json"
+    window = MainWindow(settings_path=tmp_path / "startup.json")
+    try:
+        window.crosshair_toggle.setChecked(True)
+        window._set_crosshair_position((123.5, 45.5))
+        window.save_crosshair_button.click()
+        monkeypatch.setattr(window, "_save_path", lambda *args: str(path))
+        window.save_settings()
+        window.center_crosshair_button.click()
+        window.save_crosshair_button.click()
+        window.crosshair_toggle.setChecked(False)
+        monkeypatch.setattr(window, "_choose_file", lambda *args: str(path))
+        window.load_settings()
+        assert window.crosshair_toggle.isChecked()
+        assert window.live_pane.crosshair_position == (123.5, 45.5)
+        assert window.reference_pane.crosshair_position == (123.5, 45.5)
+        assert window._saved_crosshair_position == (123.5, 45.5)
+        assert not window.move_crosshair_toggle.isChecked()
+    finally:
+        window.close()
+
+
 def test_corrupt_settings_do_not_prevent_startup(application, tmp_path):
     path = tmp_path / "settings.json"
     path.write_text("broken json")

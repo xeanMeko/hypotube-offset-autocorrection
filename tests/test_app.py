@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtTest, QtWidgets
 
 from measure_shift.app import MainWindow
 from measure_shift.display import render_view
@@ -120,6 +120,33 @@ def test_zoom_links_populated_image_views(window, qt_application, source_name, t
     qt_application.processEvents()
     np.testing.assert_allclose(target.view.targetRange(), source.view.viewRange())
     assert not np.allclose(target.view.viewRange(), original_range)
+
+
+@pytest.mark.parametrize("source_name", ["reference_pane", "live_pane"])
+def test_crosshair_click_links_views_without_changing_roi(window, qt_application, source_name):
+    start_demo(window, qt_application)
+    window.area.setCurrentText("Rectangle")
+    wait_current_config(window, qt_application)
+    window.pause_action.setChecked(True)
+    window._fit_images()
+    window.crosshair_toggle.setChecked(True)
+    window.move_crosshair_toggle.setChecked(True)
+    qt_application.processEvents()
+    config, pair = window.config, window.last_pair
+    source = getattr(window, source_name)
+    # Place inside the ROI so its mouse handling is covered as well.
+    position = source.plot.mapFromScene(source.image.mapToScene(QtCore.QPointF(300, 200)))
+    point = source.image.mapFromScene(source.plot.mapToScene(position))
+    QtTest.QTest.mouseClick(source.plot.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=position)
+    for pane in (window.reference_pane, window.live_pane):
+        assert pane.crosshair_position == pytest.approx((point.x(), point.y()))
+    assert window.config is config and window.last_pair is pair
+    zoom_out(source)
+    for pane in (window.reference_pane, window.live_pane):
+        assert pane.crosshair_position == pytest.approx((point.x(), point.y()))
+    window.crosshair_toggle.setChecked(False)
+    assert not window.move_crosshair_toggle.isChecked()
+    assert not window.move_crosshair_toggle.isEnabled()
 
 
 @pytest.mark.parametrize("divisor", [1, 2, 4, 6, 8])

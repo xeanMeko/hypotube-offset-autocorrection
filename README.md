@@ -147,10 +147,16 @@ and exports keep native image coordinates. The display scale is remembered
 across restarts and stays constant when resizing the window. Mouse zoom can
 show **Custom**; **View → Fit images** shows **Fit** and displays the whole image.
 
-Reference and live views support linked zoom and pan. Enable **Show center
-crosshair** beneath the **View** selector to draw cyan guides through the image
-center in both views. The guides stay anchored while zooming and panning, and the
-toggle is remembered across restarts.
+Reference and live views support linked zoom and pan. Enable **Show crosshair**
+beneath the **View** selector to draw cyan guides in both views. Enable
+**Move crosshair (click image)**, then left-click either image to place both
+guides at the same native image coordinates. Turn movement off to lock the
+position. **Save crosshair** remembers the position across restarts and locks it;
+unsaved moves last only for the current session. **Center** returns the guides
+to the image center; save again to remember that choice. Saved positions are
+also included in settings profiles. With smaller images, guides stay within the
+image edges while retaining the saved coordinates for larger images. Zooming
+and panning preserve the image position, and visibility is remembered.
 
 Whole-image phase correlation is the default. A draggable rectangular or
 circular region limits the analysis to a feature. A Hann window or circular

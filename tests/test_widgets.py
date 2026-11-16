@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtTest, QtWidgets
 
 from measure_shift.analytics import analyze_pair
 from measure_shift.engine import MeasurementEngine
@@ -63,6 +63,68 @@ def test_image_cursor_and_roi_use_native_row_column_coordinates(show_widget, qap
     pane.roi.setPos((15, 18))
     pane._roi_finished()
     assert emitted[-1] == Region("rectangle", 15, 18, 25, 20)
+
+
+def test_crosshair_moves_only_on_enabled_image_clicks(show_widget, qapp):
+    pane = show_widget(ImagePane("Image"))
+    pane.set_image(np.zeros((200, 300), np.uint8))
+    pane.set_crosshair_visible(True)
+    pane.view.setRange(xRange=(-50, 350), yRange=(-50, 250), padding=0)
+    qapp.processEvents()
+    emitted = []
+    pane.crosshair_moved.connect(emitted.append)
+
+    def click(x, y):
+        position = pane.plot.mapFromScene(pane.image.mapToScene(QtCore.QPointF(x, y)))
+        point = pane.image.mapFromScene(pane.plot.mapToScene(position))
+        QtTest.QTest.mouseClick(pane.plot.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=position)
+        return point.x(), point.y()
+
+    click(65, 75)
+    assert pane.crosshair_position is None and not emitted
+    pane.set_crosshair_movable(True)
+    click(-20, 75)
+    assert pane.crosshair_position is None and not emitted
+    expected = click(65, 75)
+    assert pane.crosshair_position == pytest.approx(expected)
+    assert emitted == [pane.crosshair_position]
+    np.testing.assert_allclose(pane.crosshair_horizontal.getData()[1], [expected[1]] * 2)
+    np.testing.assert_allclose(pane.crosshair_vertical.getData()[0], [expected[0]] * 2)
+
+    # Panning with the same button must not place a new crosshair on release.
+    start = pane.plot.mapFromScene(pane.image.mapToScene(QtCore.QPointF(100, 100)))
+    end = start + QtCore.QPoint(60, 40)
+    QtTest.QTest.mousePress(pane.plot.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+    QtTest.QTest.mouseMove(pane.plot.viewport(), end, delay=20)
+    QtTest.QTest.mouseRelease(pane.plot.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+    assert pane.crosshair_position == pytest.approx(expected)
+    assert len(emitted) == 1
+    pane.set_crosshair_visible(False)
+    pane.set_crosshair_visible(True)
+    click(100, 100)
+    assert pane.crosshair_position == pytest.approx(expected)
+    assert len(emitted) == 1
+
+
+def test_crosshair_retains_native_position_across_frames_sizes_and_clear(show_widget):
+    pane = show_widget(ImagePane("Image"))
+    pane.set_crosshair_position((250.5, 150.5))
+    pane.set_crosshair_visible(True)
+    assert not pane.crosshair_horizontal.isVisible()
+    pane.set_image(np.zeros((200, 300), np.uint8))
+    pane.set_image(np.ones((200, 300), np.uint8))
+    np.testing.assert_allclose(pane.crosshair_vertical.getData()[0], [250.5] * 2)
+    pane.set_image(np.zeros((80, 100), np.uint8))
+    np.testing.assert_allclose(pane.crosshair_horizontal.getData()[1], [79.5] * 2)
+    np.testing.assert_allclose(pane.crosshair_vertical.getData()[0], [99.5] * 2)
+    assert pane.crosshair_position == (250.5, 150.5)
+    pane.clear_image()
+    assert not pane.crosshair_horizontal.isVisible()
+    pane.set_image(np.zeros((200, 300), np.uint8))
+    np.testing.assert_allclose(pane.crosshair_vertical.getData()[0], [250.5] * 2)
+    pane.set_crosshair_position(None)
+    np.testing.assert_allclose(pane.crosshair_horizontal.getData()[1], [100] * 2)
+    np.testing.assert_allclose(pane.crosshair_vertical.getData()[0], [150] * 2)
 
 
 def test_drawn_line_profile_samples_both_native_images(show_widget):

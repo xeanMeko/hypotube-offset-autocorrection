@@ -47,6 +47,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._settings_path = Path(settings_path) if settings_path is not None else default_settings_path()
         self._restoring_settings = True
         self._remembered_camera = {}
+        self._saved_crosshair_position = None
         self.setWindowTitle("Measure Shift · Live alignment")
         self.resize(1500, 960)
         self.config = MatchConfig()
@@ -239,13 +240,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode.addItems(["Live", "Red / cyan overlay", "Absolute difference", "Compensated preview", "Compensated difference"])
         form.addRow("View", self.view_mode)
         settings_layout.addLayout(form)
-        self.crosshair_toggle = QtWidgets.QCheckBox("Show center crosshair")
-        self.crosshair_toggle.setToolTip("Show fixed guides through the image center in both reference and live views.")
+        self.crosshair_toggle = QtWidgets.QCheckBox("Show crosshair")
+        self.crosshair_toggle.setToolTip("Show cyan guides at the same image coordinates in both reference and live views.")
         settings_layout.addWidget(self.crosshair_toggle)
+        self.move_crosshair_toggle = QtWidgets.QCheckBox("Move crosshair (click image)")
+        self.move_crosshair_toggle.setToolTip("Enable, then left-click either image to place both crosshairs. Disable to lock the position.")
+        self.move_crosshair_toggle.setEnabled(False)
+        settings_layout.addWidget(self.move_crosshair_toggle)
+        crosshair_buttons = QtWidgets.QHBoxLayout()
+        self.save_crosshair_button = QtWidgets.QPushButton("Save crosshair")
+        self.save_crosshair_button.setToolTip("Remember this position across restarts. Unsaved moves apply only to this session.")
+        self.center_crosshair_button = QtWidgets.QPushButton("Center")
+        self.center_crosshair_button.setToolTip("Return both guides to the image center. Click Save crosshair to remember this choice.")
+        for button in (self.save_crosshair_button, self.center_crosshair_button):
+            button.setEnabled(False)
+            crosshair_buttons.addWidget(button)
+        settings_layout.addLayout(crosshair_buttons)
         settings_layout.addStretch()
         controls.addWidget(image_settings, 2)
         self.crosshair_toggle.toggled.connect(self.reference_pane.set_crosshair_visible)
         self.crosshair_toggle.toggled.connect(self.live_pane.set_crosshair_visible)
+        self.crosshair_toggle.toggled.connect(self._crosshair_visibility_changed)
+        for pane in (self.reference_pane, self.live_pane):
+            self.move_crosshair_toggle.toggled.connect(pane.set_crosshair_movable)
+            pane.crosshair_moved.connect(self._set_crosshair_position)
+        self.save_crosshair_button.clicked.connect(self._save_crosshair)
+        self.center_crosshair_button.clicked.connect(lambda: self._set_crosshair_position(None))
         self.tolerance.valueChanged.connect(self._update_readout)
         self.area.currentIndexChanged.connect(self._area_changed)
         self.display_scale.currentIndexChanged.connect(self._display_scale_changed)
@@ -1113,6 +1133,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remembered_camera.update(self._camera_values())
         return dict(self._remembered_camera)
 
+    def _crosshair_visibility_changed(self, visible):
+        self.move_crosshair_toggle.setEnabled(visible)
+        self.save_crosshair_button.setEnabled(visible)
+        self.center_crosshair_button.setEnabled(visible)
+        if not visible:
+            self.move_crosshair_toggle.setChecked(False)
+
+    def _set_crosshair_position(self, position):
+        for pane in (self.reference_pane, self.live_pane):
+            pane.set_crosshair_position(position)
+
+    def _crosshair_settings(self):
+        return dict(crosshair=self.crosshair_toggle.isChecked(),
+                    crosshair_position=self._saved_crosshair_position)
+
+    def _restore_crosshair_settings(self, ui):
+        if "crosshair_position" in ui:
+            position = ui["crosshair_position"]
+            if position is None or (isinstance(position, (list, tuple)) and len(position) == 2
+                                    and all(type(value) in (int, float) and math.isfinite(value) and value >= 0
+                                            for value in position)):
+                self._saved_crosshair_position = tuple(position) if position is not None else None
+                self._set_crosshair_position(self._saved_crosshair_position)
+        visible = ui.get("crosshair")
+        if type(visible) is bool:
+            self.crosshair_toggle.setChecked(visible)
+        self.move_crosshair_toggle.setChecked(False)
+
+    def _save_crosshair(self):
+        previous = self._saved_crosshair_position
+        self._saved_crosshair_position = self.live_pane.crosshair_position
+        if self._save_startup_settings():
+            self.move_crosshair_toggle.setChecked(False)
+            self.statusBar().showMessage("Crosshair saved for future sessions.", 5000)
+        else:
+            self._saved_crosshair_position = previous
+
     def _save_startup_settings(self):
         self.settings_timer.stop()
         try:
@@ -1120,15 +1177,17 @@ class MainWindow(QtWidgets.QMainWindow):
             ui = dict(source_kind=self.source_kind.currentText(), device_id=self.device.currentData() or "",
                       device_label=self.device.currentText(), view_mode=self.view_mode.currentText(),
                       display_scale=self._display_scale_value,
-                      trend=self.trend_toggle.isChecked(), crosshair=self.crosshair_toggle.isChecked(),
+                      trend=self.trend_toggle.isChecked(), **self._crosshair_settings(),
                       motion_visible=not self.motion_dock.isHidden(),
                       analytics_visible=not self.dock.isHidden(), analytics_mode=self.dock.mode.currentText(),
                       analytics_tab=self.dock.tabs.currentIndex(),
                       analytics_pages=[page.enabled.isChecked() for page in self.dock.pages.values()])
             save_profile(self._settings_path, self.config, self.tolerance.value(), self.dock.rate.value(),
                          self._settings_camera(), motion=self.motion_dock.config.to_dict(), ui=ui)
+            return True
         except Exception as exc:
             self.statusBar().showMessage(f"Could not save startup settings: {exc}", 10000)
+            return False
 
     def _apply_settings_profile(self, profile):
         config, tolerance, hz, camera, motion = profile
@@ -1155,6 +1214,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             *profile, ui = load_profile(self._settings_path, include_motion=True, include_ui=True)
             self._apply_settings_profile(profile)
+            self._restore_crosshair_settings(ui)
             for control, key in ((self.source_kind, "source_kind"), (self.view_mode, "view_mode"),
                                  (self.dock.mode, "analytics_mode")):
                 value = ui.get(key)
@@ -1172,7 +1232,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tab = ui.get("analytics_tab")
             if type(tab) is int and 0 <= tab < self.dock.tabs.count():
                 self.dock.tabs.setCurrentIndex(tab)
-            for control, key in ((self.trend_toggle, "trend"), (self.crosshair_toggle, "crosshair"),
+            for control, key in ((self.trend_toggle, "trend"),
                                  (self.motion_dock, "motion_visible"),
                                  (self.dock, "analytics_visible")):
                 value = ui.get(key)
@@ -1196,7 +1256,7 @@ class MainWindow(QtWidgets.QMainWindow):
             camera = self._settings_camera()
             try:
                 save_profile(path, self.config, self.tolerance.value(), self.dock.rate.value(), camera,
-                             motion=self.motion_dock.config.to_dict())
+                             motion=self.motion_dock.config.to_dict(), ui=self._crosshair_settings())
                 self.statusBar().showMessage(f"Saved {path}", 10000)
             except Exception as exc:
                 self._error(exc)
@@ -1206,7 +1266,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path:
             return
         try:
-            self._apply_settings_profile(load_profile(path, include_motion=True))
+            *profile, ui = load_profile(path, include_motion=True, include_ui=True)
+            self._apply_settings_profile(profile)
+            self._restore_crosshair_settings(ui)
             self._schedule_settings_save()
             self.notice.setText("Settings loaded. Apply camera settings as needed; toggle Connect hardware on to enable axis control.")
         except Exception as exc:
