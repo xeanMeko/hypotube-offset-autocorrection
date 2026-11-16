@@ -40,6 +40,7 @@ class MotionConfig:
     jog_distance: float = 1.0
     motor_speed: int = 200
     repeat_hz: float = 2.0
+    calibration_steps: int = 100
     pixels_per_step: float | None = None
     calibration_source_id: str = ""
     calibration_shape: tuple[int, int] | None = None
@@ -59,6 +60,8 @@ class MotionConfig:
             raise ValueError("Left and right must use different digital inputs")
         if self.reference_channel is not None and (type(self.reference_channel) is not int or self.reference_channel not in range(4)):
             raise ValueError("Reference capture channel must be disabled or between 0 and 3")
+        if self.reference_channel in (self.left_channel, self.right_channel):
+            raise ValueError("Reference capture must use a different digital input from left and right")
         if self.align_channel is not None:
             if type(self.align_channel) is not int or self.align_channel not in range(4):
                 raise ValueError("Align X channel must be disabled or between 0 and 3")
@@ -78,6 +81,8 @@ class MotionConfig:
                 raise ValueError(f"{name.replace('_', ' ').capitalize()} must be positive and finite")
         if not .1 <= self.repeat_hz <= 10:
             raise ValueError("Hold repeat frequency must be between 0.1 and 10 Hz")
+        if type(self.calibration_steps) is not int or not 1 <= abs(self.calibration_steps) <= 1_000_000:
+            raise ValueError("Calibration test move must be a nonzero integer within ±1000000 driver steps")
         if self.pixels_per_step is not None and (isinstance(self.pixels_per_step, bool) or
                 not isinstance(self.pixels_per_step, (int, float)) or
                 not math.isfinite(self.pixels_per_step) or self.pixels_per_step == 0):
@@ -130,6 +135,12 @@ class MotionConfig:
             # Preserve existing wiring when an older profile already uses
             # channel 3 for another action.
             kwargs["align_channel"] = None
+        if type(kwargs.get("reference_channel")) is int and kwargs["reference_channel"] in (
+                kwargs.get("left_channel", cls.left_channel), kwargs.get("right_channel", cls.right_channel)):
+            # Older profiles allowed capture to share a joystick contact.
+            # Preserve movement wiring and motor setup; disable the capture
+            # trigger until it is assigned its own input.
+            kwargs["reference_channel"] = None
         if kwargs.get("jog_unit") == "mm":
             # Older profiles stored physical units. Preserve their effective
             # motor move while retiring the millimetre setting.
@@ -707,7 +718,10 @@ class MotionController:
         # an operation after completion, Stop, or a failed readiness check.
         self._align_level = level
         if rising and not (self._operation or self._pending_operation or self._move or self._stopping):
-            self.request_align()
+            if self.config.pixels_per_step is None:
+                self.request_calibration(self.config.calibration_steps)
+            else:
+                self.request_align()
 
     def tick(self, now: float, hardware_state: HardwareState | None = None,
              inputs: tuple[bool, bool, bool, bool] | None = None,

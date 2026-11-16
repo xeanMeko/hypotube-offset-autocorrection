@@ -360,8 +360,10 @@ the connection error. Camera-only and Demo use do not require Tinkerforge bindin
    joystick polarity, and direction together. Selections stay pending until applied,
    so you can swap channels without changing live wiring one selection at a time.
    **Joystick active high** sets joystick polarity; **Invert motor direction** swaps
-   which motor direction means right. Align X must use a separate input from the
-   other actions. Both reference capture and Align X can be disabled.
+   which motor direction means right. Each action must use a separate input.
+   Both reference capture and Align X can be disabled. Older profiles that
+   assigned reference capture to a joystick input keep their joystick mapping
+   and motor settings, with reference capture disabled until reassigned.
 3. Set **Distance / nudge** and **Repeat frequency**. The defaults
    are **1 driver step** and **2 Hz**. Motor speed defaults to **200 driver steps/s**;
    adjust it under **Motor setup → Advanced motor settings** if needed.
@@ -416,7 +418,9 @@ calibration follows the same camera and step-resolution checks as measured calib
 
 Use a real IDS or Basler camera with a textured feature visible in the live
 image. **Linear Axis → Pixel calibration → Test move (steps)** defaults to **100**;
-adjust this signed distance for the available travel if needed. Hover over
+adjust this signed distance for the available travel if needed. The selected test
+move is saved with settings and is also used by the digital Align X button when
+calibration is missing. Hover over
 **Run pixel calibration** in the toolbar to see the selected move distance, then click it. The app
 captures a fresh pre-move live image, performs that finite move, and compares the
 post-move image with that live baseline after the motor stops and camera queues
@@ -469,10 +473,14 @@ With valid pixel calibration, a fixed reference, and neutral manual controls,
 click **Align X** on the main screen or press the button wired to digital input
 **3** (the default **Align X** channel). The digital trigger starts once per raw
 **LOW → HIGH** transition, independently of joystick polarity. Holding HIGH does
-not repeat. Connecting or assigning an already-HIGH input does not start alignment;
+not repeat. If pixel calibration is missing, the first press runs pixel calibration
+using **Test move (steps)** instead. This needs a live camera but no saved reference.
+After successful calibration, release and press again to align to the reference.
+If calibration fails or becomes invalid, the next press retries calibration.
+Connecting or assigning an already-HIGH input does not start an operation;
 the input must first be observed LOW. Presses during a move, calibration, alignment,
-or Stop are discarded, as are presses when the camera, reference, calibration, or
-motor is not ready. Release and press again to retry. Change or disable the channel
+or Stop are discarded, as are presses when the camera or motor is not ready, or
+when alignment needs a reference. Release and press again to retry. Change or disable the channel
 under **Digital inputs**, then click **Apply digital inputs**. Saved profiles retain
 the selection. Older profiles that already use channel 3 for another action keep
 that wiring and start with the new Align X trigger disabled.

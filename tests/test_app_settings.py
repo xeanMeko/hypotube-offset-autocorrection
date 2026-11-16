@@ -64,6 +64,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock.distance.setValue(7)
         dock.speed.setValue(125)
         dock.frequency.setValue(4)
+        dock.test_steps.setValue(-250)
         window.tolerance.setValue(2.5)
         # Internal quality thresholds survive changes to the visible controls.
         window._set_config(replace(window.config, min_response=.25, scale=.5))
@@ -86,6 +87,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert motion["reference_channel"] == 1
         assert motion["align_channel"] == 2
         assert motion["motor_current_ma"] == 900 and motion["step_resolution"] == 16
+        assert motion["calibration_steps"] == -250
         assert config.scale == .5 and tolerance == 2.5 and hz == 3
         assert camera == {"fps": 21, "exposure_ms": 5.5}
     finally:
@@ -103,6 +105,8 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert not dock.config.active_high and not dock.config.invert_direction
         assert dock.config.motor_current_ma == 900 and dock.config.step_resolution == 16
         assert (dock.config.jog_distance, dock.config.motor_speed, dock.config.repeat_hz) == (7, 125, 4)
+        assert dock.config.calibration_steps == -250 and dock.test_steps.value() == -250
+        assert "-250 driver steps" in restored.motion_controls.calibrate_button.toolTip()
         assert restored.config.scale == .5 and restored.config.min_response == .25
         assert restored.tolerance.value() == 2.5 and restored.dock.rate.value() == 3
         assert restored.source_kind.currentText() == "Basler"

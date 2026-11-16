@@ -343,7 +343,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.motion_controls.stop_button.clicked.connect(self._stop_motion)
         self.motion_controls.calibrate_button.clicked.connect(
             lambda: self._calibrate_motion(self.motion_dock.test_steps.value()))
-        self.motion_dock.test_steps.valueChanged.connect(self.motion_controls.set_calibration_move)
+        self.motion_dock.test_steps.valueChanged.connect(
+            lambda: self.motion_controls.set_calibration_move(self.motion_dock.test_steps.value()))
         self.motion_dock.known_distance_requested.connect(self._set_known_pixel_distance)
         self.motion_controls.align_button.clicked.connect(self._align_motion)
         self.motion_controls.direct_align_button.clicked.connect(self._align_motion_direct)

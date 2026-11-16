@@ -225,6 +225,9 @@ def test_reference_channel_selector_supports_all_channels_and_disabled(applicati
     dock.config_changed.connect(lambda config: changes.append(config.reference_channel))
     assert dock.reference_channel.currentData() is None
     for channel in (*range(4), None):
+        left, right = [index for index in range(4) if index != channel][:2]
+        dock.left_channel.setCurrentIndex(dock.left_channel.findData(left))
+        dock.right_channel.setCurrentIndex(dock.right_channel.findData(right))
         dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(channel))
         dock.apply_inputs_button.click()
         assert dock.config.reference_channel == channel
@@ -315,9 +318,13 @@ def test_main_calibration_button_uses_the_test_move_from_axis_settings(applicati
         window.motion_controls.calibrate_button.click()
         assert requested == [100]
         window.motion_dock.test_steps.setValue(-250)
+        assert window.motion_dock.config.calibration_steps == -250
         assert "-250 driver steps" in window.motion_controls.calibrate_button.toolTip()
         window.motion_controls.calibrate_button.click()
         assert requested == [100, -250]
+        window.motion_dock.test_steps.setValue(0)
+        assert window.motion_dock.test_steps.value() == -250
+        assert "-250 driver steps" in window.motion_controls.calibrate_button.toolTip()
     finally:
         window.close()
         application.processEvents()
@@ -642,6 +649,25 @@ def test_invalid_channel_mapping_stays_pending_until_corrected(application):
     dock.close()
 
 
+@pytest.mark.parametrize("direction", ["left_channel", "right_channel"])
+def test_shared_reference_input_is_rejected_until_assigned_separately(application, direction):
+    dock = MotionDock()
+    errors, changes = [], []
+    dock.error.connect(errors.append)
+    dock.config_changed.connect(changes.append)
+    old = dock.config
+    dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(getattr(old, direction)))
+    dock.apply_inputs_button.click()
+    assert errors and "Reference capture must use a different digital input" in errors[-1]
+    assert dock.config == old and not changes
+    assert dock.apply_inputs_button.isEnabled()
+    dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(0))
+    dock.apply_inputs_button.click()
+    assert len(changes) == 1 and dock.config.reference_channel == 0
+    assert not dock.apply_inputs_button.isEnabled()
+    dock.close()
+
+
 def test_other_edits_and_status_sync_preserve_pending_input_mapping(application):
     dock = MotionDock()
     errors = []
@@ -678,7 +704,7 @@ def test_zero_calibration_reports_error_and_closing_joins_motion(axis_window, ap
 
 @pytest.mark.parametrize("uncertain_large_offset", [False, True])
 @pytest.mark.parametrize("calibration_reference", ["target", "unrelated", "none"])
-def test_real_app_calibration_and_alignment_with_simulated_axis(
+def test_real_app_digital_calibration_and_alignment_with_simulated_axis(
         axis_window, application, monkeypatch, uncertain_large_offset, calibration_reference):
     """Exercise camera barriers, measurement threads, UI config sync, and motor feedback together."""
     import measure_shift.app as app_module
@@ -724,7 +750,7 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
          timeout=3, required=True)
     window.motion_dock.distance.setValue(6)
     window.motion_dock.test_steps.setValue(8)
-    window.motion_controls.calibrate_button.click()
+    hardware.inputs = (False, False, False, True)
     pump(application, lambda: window.motion_dock.config.pixels_per_step is not None,
          timeout=5, required=True)
     assert window.motion_dock.config.pixels_per_step == pytest.approx(.5, abs=.04)
@@ -733,6 +759,10 @@ def test_real_app_calibration_and_alignment_with_simulated_axis(
     assert window.motion_dock.config.calibration_source_id == "ids:serial:fake-serial"
     assert "px / driver step" in window.motion_dock.pixel_scale.text()
     assert window.reference is saved_reference
+    pump(application, timeout=.15)
+    assert hardware.moves == [(8, 200)]  # A held first press only calibrates.
+    hardware.inputs = (False,) * 4
+    pump(application, lambda: not window._motion_status.inputs4[3], timeout=.3, required=True)
     if calibration_reference == "none":
         assert not window.motion_controls.align_button.isEnabled()
     if calibration_reference != "target":

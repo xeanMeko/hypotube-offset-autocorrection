@@ -55,6 +55,9 @@ def pixel_config(**kwargs):
                                           ("align_channel", True), ("align_channel", "0"),
                                           ("align_channel", 1.0),
                                           ("motor_current_ma", 100), ("step_resolution", 3),
+                                          ("calibration_steps", 0), ("calibration_steps", True),
+                                          ("calibration_steps", 1.5), ("calibration_steps", None),
+                                          ("calibration_steps", 1_000_001), ("calibration_steps", -1_000_001),
                                           ("jog_unit", "mm"), ("pixels_per_step", 0)])
 def test_invalid_configuration_is_rejected(field, value):
     with pytest.raises(ValueError):
@@ -62,7 +65,8 @@ def test_invalid_configuration_is_rejected(field, value):
 
 
 def test_configuration_roundtrip_and_pixel_unit_conversion():
-    config = pixel_config(jog_unit="pixels", jog_distance=5, motor_speed=40, reference_channel=0)
+    config = pixel_config(jog_unit="pixels", jog_distance=5, motor_speed=40, reference_channel=0,
+                          calibration_steps=-250)
     config = replace(config, pixels_per_step=-2)
     assert config.distance_steps() == 2
     assert config.speed_steps() == 40
@@ -74,7 +78,9 @@ def test_configuration_roundtrip_and_pixel_unit_conversion():
 @pytest.mark.parametrize("channel", range(4))
 @pytest.mark.parametrize("active_high", [False, True])
 def test_reference_capture_uses_raw_rising_edges_without_enabling_motion(channel, active_high):
-    controller = MotionController(MotionConfig(reference_channel=channel, active_high=active_high, align_channel=None))
+    left, right = [index for index in range(4) if index != channel][:2]
+    controller = MotionController(MotionConfig(left_channel=left, right_channel=right,
+                                             reference_channel=channel, active_high=active_high, align_channel=None))
     controller.on_connected(state())
     high = tuple(index == channel for index in range(4))
     low = (False, False, False, False)
@@ -161,6 +167,21 @@ def test_reference_channel_changes_and_reconnects_reset_baseline_but_keep_cooldo
     assert controller.snapshot().reference_capture is None
 
 
+@pytest.mark.parametrize("field", ["left_channel", "right_channel"])
+def test_reference_capture_cannot_share_a_joystick_input(field):
+    with pytest.raises(ValueError, match="Reference capture must use a different digital input"):
+        replace(MotionConfig(reference_channel=0), **{field: 0}).validated()
+
+
+@pytest.mark.parametrize("field", ["left_channel", "right_channel"])
+def test_legacy_shared_reference_input_preserves_joystick_and_motor_settings(field):
+    profile = MotionConfig(motor_current_ma=1100, step_resolution=256, invert_direction=False).to_dict()
+    profile.update({field: 0, "reference_channel": 0})
+    config = MotionConfig.from_dict(profile)
+    assert config.to_dict() == {**profile, "reference_channel": None}
+    assert MotionConfig.from_dict(config.to_dict()) == config
+
+
 @pytest.mark.parametrize("field", ["left_channel", "right_channel", "reference_channel"])
 def test_align_channel_cannot_share_another_assigned_input(field):
     with pytest.raises(ValueError, match="Align X must use a different digital input"):
@@ -200,8 +221,9 @@ def test_digital_align_uses_raw_edge_and_fresh_feedback_without_repeating_held_h
 
 
 @pytest.mark.parametrize("channel", [0, 3])
-def test_digital_align_requires_low_after_connect_or_channel_change(channel):
-    controller = ready(pixel_config())
+@pytest.mark.parametrize("calibrated", [False, True])
+def test_digital_align_requires_low_after_connect_or_channel_change(channel, calibrated):
+    controller = ready(pixel_config() if calibrated else MotionConfig())
     if channel != controller.config.align_channel:
         controller.configure(replace(controller.config, align_channel=channel))
     high = tuple(index == channel for index in range(4))
@@ -219,8 +241,9 @@ def test_digital_align_requires_low_after_connect_or_channel_change(channel):
     assert [a.kind for a in controller.tick(2.2, inputs=high)] == ["freshness"]
 
 
-def test_digital_align_discards_busy_and_stop_edges():
-    controller = ready(pixel_config())
+@pytest.mark.parametrize("calibrated", [False, True])
+def test_digital_align_discards_busy_and_stop_edges(calibrated):
+    controller = ready(pixel_config() if calibrated else MotionConfig())
     low, high = (False,) * 4, (False, False, False, True)
     controller.tick(0, inputs=low)
     controller.request_calibration(2)
@@ -237,15 +260,13 @@ def test_digital_align_discards_busy_and_stop_edges():
     assert [a.kind for a in controller.tick(1.6, inputs=high)] == ["freshness"]
 
 
-@pytest.mark.parametrize("missing", ["armed", "calibration", "camera", "reference", "neutral"])
+@pytest.mark.parametrize("missing", ["armed", "camera", "reference", "neutral"])
 def test_digital_align_obeys_readiness_checks_and_never_replays_rejected_press(missing):
     controller = ready(pixel_config())
     low, high = (False,) * 4, (False, False, False, True)
     controller.tick(0, inputs=low)
     if missing == "armed":
         controller.armed = False
-    elif missing == "calibration":
-        controller.configure(replace(controller.config, pixels_per_step=None))
     elif missing == "camera":
         controller.set_context(replace(CONTEXT, paused=True))
     elif missing == "reference":
@@ -262,6 +283,76 @@ def test_digital_align_obeys_readiness_checks_and_never_replays_rejected_press(m
     assert controller._operation is None
     controller.tick(1.2, inputs=low)
     assert [a.kind for a in controller.tick(1.3, inputs=high)] == ["freshness"]
+
+
+@pytest.mark.parametrize("steps", [-8, 8])
+@pytest.mark.parametrize("reference_id", [None, "ref"])
+def test_digital_align_calibrates_first_then_requires_another_press_to_align(steps, reference_id):
+    context = replace(CONTEXT, reference_id=reference_id)
+    controller = ready(MotionConfig(calibration_steps=steps), context=context)
+    low, high = (False,) * 4, (False, False, False, True)
+    controller.tick(0, inputs=low)
+    assert [a.kind for a in controller.tick(1, inputs=high)] == ["freshness"]
+    assert controller._operation == "calibration"
+    controller.acknowledge_freshness(1)
+    baseline = replace(feedback("before", 10, 1.21), reference_id=reference_id)
+    assert [a.steps for a in moves(controller.tick(1.3, inputs=high, feedback=baseline))] == [steps]
+    assert [a.kind for a in controller.tick(1.4, state(steps), high)] == ["freshness"]
+    controller.acknowledge_freshness(2)
+    measured = replace(feedback("after", 10 + steps * .5, 1.65, generation=2), reference_id=reference_id)
+    assert not controller.tick(1.7, inputs=high, feedback=measured)
+    assert controller.config.pixels_per_step == .5
+    assert controller.config.calibration_steps == steps
+    assert controller._operation is None and controller.phase == "ready"
+    assert "Pixel calibration saved" in controller.message
+    assert not controller.tick(2, inputs=high)
+    assert controller._operation is None  # Holding cannot start alignment.
+    controller.set_context(CONTEXT)  # Supply the reference before aligning.
+    controller.tick(2.1, inputs=low)
+    assert [a.kind for a in controller.tick(2.2, inputs=high)] == ["freshness"]
+    assert controller._operation == "align"
+
+
+def test_digital_align_retries_failed_calibration_only_after_a_new_press():
+    controller = ready(MotionConfig(calibration_steps=4))
+    low, high = (False,) * 4, (False, False, False, True)
+    controller.tick(0, inputs=low)
+    controller.tick(1, inputs=high)
+    controller.acknowledge_freshness(1)
+    controller.tick(1.3, inputs=high, feedback=feedback("before", 10, 1.21))
+    controller.tick(1.4, state(4), high)
+    controller.acknowledge_freshness(2)
+    assert [a.kind for a in controller.tick(1.7, inputs=high,
+                                          feedback=feedback("after", 11, 1.65, generation=2))] == ["stop"]
+    assert controller.config.pixels_per_step is None
+    controller.tick(1.8, inputs=high)
+    assert controller._operation is None
+    controller.tick(1.9, inputs=low)
+    assert [a.kind for a in controller.tick(2, inputs=high)] == ["freshness"]
+    assert controller._operation == "calibration"
+
+
+@pytest.mark.parametrize("missing", ["armed", "camera", "neutral"])
+def test_first_digital_calibration_obeys_readiness_checks_and_discards_rejected_presses(missing):
+    controller = ready(MotionConfig())
+    low, high = (False,) * 4, (False, False, False, True)
+    controller.tick(0, inputs=low)
+    if missing == "armed":
+        controller.armed = False
+    elif missing == "camera":
+        controller.set_context(replace(CONTEXT, paused=True))
+    else:
+        controller.set_keyboard(True, False)
+    controller.tick(1, inputs=high)
+    assert controller._operation is None
+    controller.armed = True
+    controller.set_context(CONTEXT)
+    controller.set_keyboard(False, False)
+    controller.tick(1.1, inputs=high)
+    assert controller._operation is None
+    controller.tick(1.2, inputs=low)
+    assert [a.kind for a in controller.tick(1.3, inputs=high)] == ["freshness"]
+    assert controller._operation == "calibration"
 
 
 def test_disabled_digital_align_does_not_trigger():
@@ -296,6 +387,10 @@ def test_current_defaults_to_800_in_new_and_previously_unset_profiles():
     assert MotionConfig.from_dict({}).motor_current_ma == 800
     assert MotionConfig.from_dict({"motor_current_ma": None}).motor_current_ma == 800
     assert MotionConfig.from_dict({"motor_current_ma": 900}).motor_current_ma == 900
+
+
+def test_legacy_profiles_use_the_default_calibration_test_move():
+    assert MotionConfig.from_dict({}).calibration_steps == 100
 
 
 def test_enable_message_identifies_active_inputs_and_polarity():

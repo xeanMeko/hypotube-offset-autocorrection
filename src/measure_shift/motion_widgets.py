@@ -186,7 +186,7 @@ class MotionDock(QtWidgets.QDockWidget):
             for channel in range(4):
                 control.addItem(f"Channel {channel}", channel)
         self.reference_channel.setToolTip("Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
-        self.align_channel.setToolTip("Start Align X on LOW → HIGH. Requires a live camera, reference and pixel calibration. Independent of joystick polarity.")
+        self.align_channel.setToolTip("On LOW → HIGH, calibrate using Test move (steps) if needed; otherwise align X. Requires a live camera and enabled motor; alignment also needs a reference. Independent of joystick polarity.")
         self.active_high = QtWidgets.QCheckBox("Joystick active high")
         self.invert_direction = QtWidgets.QCheckBox("Invert motor direction")
         self.apply_inputs_button = QtWidgets.QPushButton("Apply digital inputs")
@@ -199,7 +199,7 @@ class MotionDock(QtWidgets.QDockWidget):
         form.addRow(self.active_high)
         form.addRow(self.invert_direction)
         form.addRow(self.apply_inputs_button)
-        hint = QtWidgets.QLabel("Reference / Align X: LOW → HIGH. Release before pressing again.")
+        hint = QtWidgets.QLabel("Reference / Align X: LOW → HIGH. Align X calibrates first if needed. Release before pressing again.")
         hint.setWordWrap(True)
         form.addRow(hint)
         form.addRow("Raw inputs", self.inputs)
@@ -273,7 +273,8 @@ class MotionDock(QtWidgets.QDockWidget):
         self.pixel_scale.setWordWrap(True)
         self.test_steps = QtWidgets.QSpinBox()
         self.test_steps.setRange(-1000000, 1000000)
-        self.test_steps.setValue(100)
+        self.test_steps.setKeyboardTracking(False)
+        self.test_steps.setToolTip("Signed test move for Run pixel calibration and the first digital Align X press when calibration is missing.")
         self.known_pixel_distance = self._number(-1e9, 1e9, 8)
         self.known_pixel_distance.setSuffix(" px")
         self.known_pixel_distance.setToolTip("Known X movement for a positive driver-step nudge. Use a negative value if positive motor steps move the image left.")
@@ -295,7 +296,7 @@ class MotionDock(QtWidgets.QDockWidget):
         self.setMinimumWidth(320)
         for control in (self.host, self.stepper_uid, self.digital_uid, self.motor_current):
             control.editingFinished.connect(self._edited)
-        for control in (self.port, self.distance, self.speed, self.frequency):
+        for control in (self.port, self.distance, self.speed, self.frequency, self.test_steps):
             control.valueChanged.connect(self._edited)
         self.resolution.currentIndexChanged.connect(self._edited)
         self.interpolation.toggled.connect(self._edited)
@@ -376,6 +377,7 @@ class MotionDock(QtWidgets.QDockWidget):
             self.distance.setValue(config.jog_distance)
             self.speed.setValue(config.motor_speed)
             self.frequency.setValue(config.repeat_hz)
+            self.test_steps.setValue(config.calibration_steps)
             self.pixel_scale.setText(f"Pixels: {config.pixels_per_step:+.6g} px / driver step" if config.pixels_per_step is not None else "Pixels: not calibrated")
             self._effective()
         finally:
@@ -421,7 +423,8 @@ class MotionDock(QtWidgets.QDockWidget):
                              stepper_uid=self.stepper_uid.text().strip(), digital_uid=self.digital_uid.text().strip(),
                              motor_current_ma=self.motor_current.value() or None, step_resolution=self.resolution.currentData(),
                              interpolation=self.interpolation.isChecked(), jog_unit=self.unit.currentData(),
-                             jog_distance=self.distance.value(), motor_speed=self.speed.value(), repeat_hz=self.frequency.value())
+                             jog_distance=self.distance.value(), motor_speed=self.speed.value(), repeat_hz=self.frequency.value(),
+                             calibration_steps=self.test_steps.value())
             if config.step_resolution != old.step_resolution:
                 config = replace(config, pixels_per_step=None,
                                  calibration_source_id="", calibration_shape=None,
