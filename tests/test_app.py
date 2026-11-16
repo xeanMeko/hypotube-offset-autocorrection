@@ -122,7 +122,8 @@ def test_zoom_links_populated_image_views(window, qt_application, source_name, t
     assert not np.allclose(target.view.viewRange(), original_range)
 
 
-def test_demo_reference_roi_and_resolution_workflow(window, qt_application):
+@pytest.mark.parametrize("divisor", [1, 2, 4, 6, 8])
+def test_demo_reference_roi_and_display_scale_workflow(window, qt_application, divisor):
     start_demo(window, qt_application)
     assert window.live_pane.array.shape == (480, 640)
     assert window.analytics.jobs_completed == 0
@@ -138,9 +139,22 @@ def test_demo_reference_roi_and_resolution_workflow(window, qt_application):
     wait_current_config(window, qt_application)
     assert window.config.method == "phase"
     assert window.config.region.kind == "rectangle"
-    window.scale.setCurrentIndex(2)
-    wait_current_config(window, qt_application)
-    assert window.last_pair.config.scale == 0.25
+    window.pause_action.setChecked(True)
+    config = window.config
+    pair = window.last_pair
+    pixels = window.live_pane.array.copy()
+    window.display_scale.setCurrentText(f"1:{divisor}")
+    qt_application.processEvents()
+    assert window.config is config
+    assert window.last_pair is pair
+    assert window.last_pair.config.scale == 1
+    np.testing.assert_array_equal(window.live_pane.array, pixels)
+    for pane in (window.reference_pane, window.live_pane):
+        rect = pane.image.mapRectToScene(pane.image.boundingRect())
+        h, w = pane.array.shape[:2]
+        assert rect.width() == pytest.approx(w / divisor)
+        assert rect.height() == pytest.approx(h / divisor)
+        assert pane.image.transform().isIdentity()
     assert window.last_pair.result.validity != "invalid", window.last_pair.result.reasons
     assert window.measurement.error is None
 

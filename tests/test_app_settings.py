@@ -66,8 +66,8 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock.frequency.setValue(4)
         window.tolerance.setValue(2.5)
         # Internal quality thresholds survive changes to the visible controls.
-        window._set_config(replace(window.config, min_response=.25))
-        window.scale.setCurrentIndex(window.scale.findData(.5))
+        window._set_config(replace(window.config, min_response=.25, scale=.5))
+        window.display_scale.setCurrentText("1:6")
         window.view_mode.setCurrentText("Absolute difference")
         window.trend_toggle.setChecked(True)
         window.dock.show()
@@ -109,6 +109,9 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert restored.device.currentData() == "camera-42"
         assert restored._profile_camera == {"fps": 21, "exposure_ms": 5.5}
         assert restored.view_mode.currentText() == "Absolute difference"
+        assert restored.display_scale.currentText() == "1:6"
+        assert restored.reference_pane.display_scale == pytest.approx(1 / 6)
+        assert restored.live_pane.display_scale == pytest.approx(1 / 6)
         assert restored.trend_toggle.isChecked()
         assert restored.motion_dock.isVisible() and restored.dock.isVisible()
         assert restored.dock.tabs.currentIndex() == 5 and restored.dock.mode.currentText() == "Live"

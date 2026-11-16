@@ -88,6 +88,9 @@ class ImagePane(QtWidgets.QWidget):
         self.cursor.setObjectName("muted")
         layout.addWidget(self.cursor)
         self.array = None
+        self._display_scale = None
+        self.view.sigResized.connect(self._apply_display_scale)
+        self.view.sigRangeChangedManually.connect(self._remember_display_scale)
         self.roi = None
         self._region = None
         self._auto_done = False
@@ -135,13 +138,46 @@ class ImagePane(QtWidgets.QWidget):
             self._update_crosshair()
         if auto or not self._auto_done or previous_shape != array.shape:
             h, w = array.shape[:2]
-            self.view.setRange(rect=QtCore.QRectF(0, 0, w, h), padding=.03)
+            if self._display_scale is None:
+                self.view.setRange(rect=QtCore.QRectF(0, 0, w, h), padding=.03)
+            else:
+                self._apply_display_scale(center=QtCore.QPointF(w / 2, h / 2))
             self._auto_done = True
 
     def clear_image(self) -> None:
         self.array = None
         self.image.clear()
         self._update_crosshair()
+
+    @property
+    def display_scale(self) -> float | None:
+        return self._display_scale
+
+    def set_display_scale(self, scale: float | None) -> None:
+        """Set screen pixels per image pixel; None fits the whole image."""
+        self._display_scale = scale
+        if self.array is None:
+            return
+        if scale is None:
+            h, w = self.array.shape[:2]
+            self.view.setRange(rect=QtCore.QRectF(0, 0, w, h), padding=.03)
+        else:
+            self._apply_display_scale()
+
+    def _apply_display_scale(self, *_, center=None) -> None:
+        if self._display_scale is None or self.array is None:
+            return
+        bounds = self.view.rect()
+        if bounds.width() <= 0 or bounds.height() <= 0:
+            return
+        center = self.view.viewRect().center() if center is None else center
+        width = bounds.width() / self._display_scale
+        height = bounds.height() / self._display_scale
+        self.view.setRange(rect=QtCore.QRectF(center.x() - width / 2, center.y() - height / 2, width, height), padding=0)
+
+    def _remember_display_scale(self, *_) -> None:
+        if self.array is not None:
+            self._display_scale = self.view.rect().width() / self.view.viewRect().width()
 
     def set_crosshair_visible(self, visible: bool) -> None:
         self._crosshair_visible = visible

@@ -186,50 +186,69 @@ class MainWindow(QtWidgets.QMainWindow):
         self.live_pane.view.sigRangeChangedManually.connect(lambda _: self._link_views(self.live_pane, self.reference_pane))
         split.addWidget(self.reference_pane)
         split.addWidget(self.live_pane)
+        split.setChildrenCollapsible(False)
+        split.setSizes([750, 750])
+        main.addWidget(split, 1)
         self.reference_pane.region_changed.connect(self._region_dragged)
         self.live_pane.region_changed.connect(self._region_dragged)
 
-        sidebar = QtWidgets.QWidget()
-        sidebar.setMinimumWidth(245)
-        sidebar.setMaximumWidth(310)
-        side = QtWidgets.QVBoxLayout(sidebar)
+        self.controls_panel = QtWidgets.QWidget()
+        controls = QtWidgets.QHBoxLayout(self.controls_panel)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(12)
+        alignment = QtWidgets.QGroupBox("Alignment")
+        readouts = QtWidgets.QVBoxLayout(alignment)
         self.state = QtWidgets.QLabel("NO REFERENCE")
         self.state.setObjectName("state")
         self.state.setWordWrap(True)
-        side.addWidget(self.state)
+        readouts.addWidget(self.state)
         self.x_value = QtWidgets.QLabel("X   — px")
         self.y_value = QtWidgets.QLabel("Y   — px")
         for label in (self.x_value, self.y_value):
             label.setObjectName("readout")
             label.setToolTip("Display averaged over 150 ms; tolerance uses the latest measurement.")
-            side.addWidget(label)
-        form = QtWidgets.QFormLayout()
+            label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+            readouts.addWidget(label)
         self.tolerance = QtWidgets.QDoubleSpinBox()
         self.tolerance.setRange(0, 100000)
         self.tolerance.setDecimals(2)
         self.tolerance.setValue(1)
         self.tolerance.setSuffix(" px")
-        form.addRow("Tolerance", self.tolerance)
+        tolerance_form = QtWidgets.QFormLayout()
+        tolerance_form.addRow("Tolerance", self.tolerance)
+        readouts.addLayout(tolerance_form)
+        controls.addWidget(alignment, 1)
+
+        image_settings = QtWidgets.QGroupBox("Image settings")
+        settings_layout = QtWidgets.QVBoxLayout(image_settings)
+        form = QtWidgets.QFormLayout()
         self.area = QtWidgets.QComboBox()
         self.area.addItems(["Whole image", "Rectangle", "Circle"])
         form.addRow("Analyze", self.area)
-        self.scale = QtWidgets.QComboBox()
-        self.scale.addItem("Native (1:1)", 1.0)
-        self.scale.addItem("Half (1:2)", .5)
-        self.scale.addItem("Quarter (1:4)", .25)
-        form.addRow("Resolution", self.scale)
+        self.display_scale = QtWidgets.QComboBox()
+        for divisor in (1, 2, 4, 6, 8):
+            self.display_scale.addItem(f"1:{divisor}", 1 / divisor)
+        self.display_scale.setToolTip(
+            "Image display size: 1:1 shows one image pixel per screen pixel; 1:2 shows half size. "
+            "Image proportions and measurements stay unchanged.")
+        self._display_scale_value = 1.0
+        for pane in (self.reference_pane, self.live_pane):
+            pane.set_display_scale(self._display_scale_value)
+        form.addRow("Display scale", self.display_scale)
         self.view_mode = QtWidgets.QComboBox()
         self.view_mode.addItems(["Live", "Red / cyan overlay", "Absolute difference", "Compensated preview", "Compensated difference"])
         form.addRow("View", self.view_mode)
-        side.addLayout(form)
+        settings_layout.addLayout(form)
         self.crosshair_toggle = QtWidgets.QCheckBox("Show center crosshair")
         self.crosshair_toggle.setToolTip("Show fixed guides through the image center in both reference and live views.")
-        side.addWidget(self.crosshair_toggle)
+        settings_layout.addWidget(self.crosshair_toggle)
+        settings_layout.addStretch()
+        controls.addWidget(image_settings, 2)
         self.crosshair_toggle.toggled.connect(self.reference_pane.set_crosshair_visible)
         self.crosshair_toggle.toggled.connect(self.live_pane.set_crosshair_visible)
         self.tolerance.valueChanged.connect(self._update_readout)
         self.area.currentIndexChanged.connect(self._area_changed)
-        self.scale.currentIndexChanged.connect(self._matching_changed)
+        self.display_scale.currentIndexChanged.connect(self._display_scale_changed)
         self.view_mode.currentIndexChanged.connect(self._view_changed)
 
         camera = QtWidgets.QGroupBox("Camera controls")
@@ -251,16 +270,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_camera = QtWidgets.QPushButton("Apply camera settings")
         camera_layout.addRow(self.apply_camera)
         self.apply_camera.clicked.connect(self._apply_camera)
-        side.addWidget(camera)
-        side.addStretch()
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(sidebar)
-        scroll.setMinimumWidth(270)
-        scroll.setMaximumWidth(335)
-        split.addWidget(scroll)
-        split.setSizes([560, 560, 290])
-        main.addWidget(split, 1)
+        controls.addWidget(camera, 2)
+        main.addWidget(self.controls_panel)
 
         self.trend_plot = pg.PlotWidget()
         self.trend_plot.setMaximumHeight(160)
@@ -294,6 +305,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(content)
         self.dock = AnalyticsDock(self)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self.dock)
+        self.dock.setFloating(True)
+        self.dock.resize(1100, 740)
         self.dock.hide()
         self.tools_menu.addAction(self.dock.toggleViewAction())
         self.dock.changed.connect(self._analysis_changed)
@@ -695,12 +708,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._schedule_settings_save()
 
     def _sync_matching_controls(self):
-        for widget in (self.area, self.scale):
-            widget.blockSignals(True)
-        self.area.setCurrentIndex({"full": 0, "rectangle": 1, "circle": 2}[self.config.region.kind])
-        self.scale.setCurrentIndex({1: 0, .5: 1, .25: 2}[self.config.scale])
-        for widget in (self.area, self.scale):
-            widget.blockSignals(False)
+        with QtCore.QSignalBlocker(self.area):
+            self.area.setCurrentIndex({"full": 0, "rectangle": 1, "circle": 2}[self.config.region.kind])
 
     def _area_changed(self):
         kind = ("full", "rectangle", "circle")[self.area.currentIndex()]
@@ -708,8 +717,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_config(replace(self.config, region=region))
         self._sync_matching_controls()
 
-    def _matching_changed(self):
-        self._set_config(replace(self.config, scale=self.scale.currentData()))
+    def _display_scale_changed(self):
+        scale = self.display_scale.currentData()
+        if scale is not None:
+            self._set_display_scale(scale)
+
+    def _set_display_scale(self, scale):
+        self._display_scale_value = scale
+        for pane in (self.reference_pane, self.live_pane):
+            pane.set_display_scale(scale)
+        self._sync_display_scale()
+        self._schedule_settings_save()
+
+    def _sync_display_scale(self):
+        index = -1
+        if self._display_scale_value is not None:
+            for candidate in range(self.display_scale.count()):
+                if math.isclose(self.display_scale.itemData(candidate), self._display_scale_value, rel_tol=1e-9):
+                    index = candidate
+                    break
+        with QtCore.QSignalBlocker(self.display_scale):
+            self.display_scale.setPlaceholderText("Fit" if self._display_scale_value is None else "Custom")
+            self.display_scale.setCurrentIndex(index)
 
     def _region_dragged(self, region):
         self._set_config(replace(self.config, region=region))
@@ -1090,6 +1119,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._settings_path.parent.mkdir(parents=True, exist_ok=True)
             ui = dict(source_kind=self.source_kind.currentText(), device_id=self.device.currentData() or "",
                       device_label=self.device.currentText(), view_mode=self.view_mode.currentText(),
+                      display_scale=self._display_scale_value,
                       trend=self.trend_toggle.isChecked(), crosshair=self.crosshair_toggle.isChecked(),
                       motion_visible=not self.motion_dock.isHidden(),
                       analytics_visible=not self.dock.isHidden(), analytics_mode=self.dock.mode.currentText(),
@@ -1130,6 +1160,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 value = ui.get(key)
                 if isinstance(value, str) and control.findText(value) >= 0:
                     control.setCurrentText(value)
+            if "display_scale" in ui:
+                scale = ui["display_scale"]
+                if scale is None or (type(scale) in (int, float) and math.isfinite(scale) and scale > 0):
+                    self._set_display_scale(scale)
             identifier = ui.get("device_id", "")
             if isinstance(identifier, str) and identifier:
                 self.device.clear()
@@ -1179,17 +1213,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._error(exc)
 
     def _fit_images(self):
-        for pane in (self.reference_pane, self.live_pane):
-            if pane.array is not None:
-                h, w = pane.array.shape[:2]
-                pane.view.setRange(rect=QtCore.QRectF(0, 0, w, h), padding=.03)
+        self._set_display_scale(None)
 
     def _link_views(self, source, target):
         # Empty panes have no image coordinates to share with another view.
-        if source.array is None or target.array is None:
+        if source.array is None:
             return
-        x_range, y_range = source.view.viewRange()
-        target.view.setRange(xRange=x_range, yRange=y_range, padding=0)
+        if target.array is not None:
+            x_range, y_range = source.view.viewRange()
+            target.view.setRange(xRange=x_range, yRange=y_range, padding=0)
+        target.set_display_scale(source.display_scale)
+        self._display_scale_value = source.display_scale
+        self._sync_display_scale()
+        self._schedule_settings_save()
 
     def _about(self):
         QtWidgets.QMessageBox.information(self, "Measure Shift", "Connect a camera or start Demo. Capture or load a reference.\n\nWhole-image phase correlation is the default. Draw a rectangle or circle to focus on a feature. X/Y are reference-to-current image displacement; the arrow shows the opposite image correction.\n\nOpen Image analytics for optional live or frozen inspection. Scores are diagnostics, not probabilities.\n\nAcquisition continues while the view is paused. CSV history retains the latest 10,000 measurements.")

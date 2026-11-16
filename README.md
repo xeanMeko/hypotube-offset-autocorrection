@@ -136,6 +136,17 @@ glibc and desktop libraries. See
    The **compensated preview** applies a software translation and is labeled:
    visual agreement in that preview does not move the physical sample.
 
+Reference and live images share the full width of the main window. Alignment
+readouts, image settings, and camera controls sit in a row beneath the images.
+The two image panes can be resized with the divider between them.
+Under **Image settings → Display scale**, choose **1:1**, **1:2**, **1:4**,
+**1:6**, or **1:8**. **1:1** shows one image pixel per screen pixel; **1:2**
+displays both dimensions at half size. This changes only the display size of
+both images and preserves their proportions. Pixels, regions, measured shifts,
+and exports keep native image coordinates. The display scale is remembered
+across restarts and stays constant when resizing the window. Mouse zoom can
+show **Custom**; **View → Fit images** shows **Fit** and displays the whole image.
+
 Reference and live views support linked zoom and pan. Enable **Show center
 crosshair** beneath the **View** selector to draw cyan guides through the image
 center in both views. The guides stay anchored while zooming and panning, and the
@@ -143,8 +154,9 @@ toggle is remembered across restarts.
 
 Whole-image phase correlation is the default. A draggable rectangular or
 circular region limits the analysis to a feature. A Hann window or circular
-taper is applied once during preprocessing. Optional half/quarter-resolution
-analysis reduces processing work; the reported shift and selected regions
+taper is applied once during preprocessing. Analysis uses native resolution by
+default. Existing settings profiles can still specify half/quarter-resolution
+analysis to reduce processing work; the reported shift and selected regions
 remain in native image pixels.
 
 The reference stays fixed while measuring. Changing source geometry clears an
@@ -172,20 +184,19 @@ estimates can differ; use native resolution when inspecting fine alignment.
 
 ## Optional analytics
 
-Open **Image analytics** from the toolbar or View menu for deeper inspection. It
-starts **Off**, with a default Live refresh rate of **1 Hz**, adjustable from
-**0.1 to 10 Hz**:
+Open **Tools → Image analytics** or **View → Image analytics** for deeper
+inspection in a separate, resizable window. It starts **Off**, with a default
+Live refresh rate of **1 Hz**, adjustable from **0.1 to 10 Hz**:
 
 | Mode | Behavior |
 | --- | --- |
 | Off | Stops optional diagnostic calculations and releases displayed diagnostic data. Live measurement continues. |
-| Live | Analyzes the current visible tab at the selected rate. Collapsing/hiding the dock pauses live diagnostic work. |
+| Live | Analyzes the current visible tab at the selected rate. Hiding the analytics window pauses live diagnostic work. |
 | Frozen | Holds one exact reference/current-frame/configuration/result pair for inspection while acquisition and measurement continue. **Capture pair** selects another pair. |
 
-Use **Maximize** to open analytics in a separate window with the full screen
-available for images and plots. **Restore** lets you resize it freely, and
-**Dock** returns it to the main window. The plot grid adds columns as the window
-gets wider to reduce scrolling.
+Use **Maximize** to give analytics the full screen. **Restore** lets you resize
+it freely, and **Dock** places it inside the main window if preferred. The plot
+grid adds columns as the window gets wider to reduce scrolling.
 
 Only the visible tab is computed. A pending diagnostic request is replaced by a
 newer one; an old job cannot overwrite a more recent selection. Essential match
@@ -210,7 +221,7 @@ modest refresh rate while aligning.
 
 - **Save snapshot…:** a `.shift.zip` bundle containing reference and current
   native PNGs plus measurement/settings metadata.
-- **Export inspection…:** the Analytics dock exports the inspected pair together
+- **Export inspection…:** the analytics window exports the inspected pair together
   with its diagnostic arrays and a PNG of the visible inspection. Alignment
   diagnostics include the compensated/difference arrays. Arrays use portable
   NumPy files; metadata uses JSON, with no Python pickle payloads.
