@@ -6,6 +6,14 @@ measures X/Y translation in native image pixels using phase
 correlation, with optional image analytics. The notebooks and sample images
 remain available.
 
+For everyday operation, see the [German user manual (PDF)](docs/benutzerhandbuch-de.pdf).
+It assumes a configured camera, motor axis, and joystick; reference capture,
+calibration, nudging, and X alignment are operated from the joystick.
+Edit the [LaTeX source](docs/benutzerhandbuch-de.tex), or use the
+[complete LaTeX source archive](docs/benutzerhandbuch-de-latex.zip).
+With pdfLaTeX installed, rebuild the PDF and archive using
+`python scripts/build_user_manual.py`. See [build instructions](docs/LATEX-ANLEITUNG.txt).
+
 ## Install and launch
 
 Use Python 3.11 or newer and a local virtual environment. The package installs

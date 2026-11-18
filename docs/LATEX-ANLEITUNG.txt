@@ -1,0 +1,38 @@
+Measure Shift – Bedienungsanleitung in LaTeX
+
+Bearbeiten
+----------
+Die Hauptdatei ist benutzerhandbuch-de.tex. Sie enthält den vollständigen
+deutschen Text sowie die Formatierung. Die Bildschirmabbildung liegt unter
+assets/bedienoberflaeche.png. Beide Dateien müssen zusammenbleiben.
+
+Die Anleitung setzt eine eingerichtete Kamera, eine betriebsbereite Motorachse
+und aktivierte Joystick-Funktionen für Referenz und Ausrichten voraus. Der
+Ausrichttaster kalibriert bei fehlender gültiger Kalibrierung; andernfalls
+startet er die X-Ausrichtung. Es werden keine Tastenpositionen vorausgesetzt.
+
+PDF erstellen
+-------------
+Mit einer üblichen TeX-Live- oder MiKTeX-Installation mit deutscher
+Sprachunterstützung im Verzeichnis dieser Datei zweimal ausführen:
+
+    pdflatex -interaction=nonstopmode -halt-on-error benutzerhandbuch-de.tex
+    pdflatex -interaction=nonstopmode -halt-on-error benutzerhandbuch-de.tex
+
+Alternativ, sofern latexmk installiert ist:
+
+    latexmk -pdf benutzerhandbuch-de.tex
+
+Die zweite Übersetzung aktualisiert die Gesamtseitenzahl. Alternativ kann
+das ZIP als Projekt in Overleaf importiert und die Hauptdatei mit pdfLaTeX
+übersetzt werden.
+
+Im vollständigen Repository erstellt folgender Befehl die PDF und ein ZIP
+mit den bearbeitbaren Quellen. Python benötigt dafür keine Zusatzpakete;
+pdfLaTeX muss verfügbar sein:
+
+    python scripts/build_user_manual.py
+
+Das Skript baut in einem temporären Verzeichnis und ersetzt die ausgelieferte
+PDF erst nach zwei erfolgreichen LaTeX-Läufen. Die manuell gesetzten
+Seitenumbrüche können bei umfangreichen Textänderungen angepasst werden.
