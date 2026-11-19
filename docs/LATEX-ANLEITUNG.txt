@@ -8,8 +8,8 @@ assets/bedienoberflaeche.png. Beide Dateien müssen zusammenbleiben.
 
 Die Anleitung setzt eine eingerichtete Kamera, eine betriebsbereite Motorachse
 und aktivierte Joystick-Funktionen für Referenz und Ausrichten voraus. Der
-Ausrichttaster kalibriert bei fehlender gültiger Kalibrierung; andernfalls
-startet er die X-Ausrichtung. Es werden keine Tastenpositionen vorausgesetzt.
+Ausrichttaster startet die direkte X-Ausrichtung. Die optionale Messung des
+X-Versatzes pro Relaisimpuls erfolgt über Run pixel calibration.
 
 PDF erstellen
 -------------

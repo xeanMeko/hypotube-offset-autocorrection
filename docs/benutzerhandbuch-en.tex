@@ -60,11 +60,9 @@
 
 \section{Prerequisites and controls}
 
-This manual assumes that the system is fully configured: the camera provides
-a continuously updating live image, the motor is ready, and the joystick
-functions are assigned and enabled. The tolerance, step size and calibration
-travel distance have been set for the application. All operation is performed
-using the joystick; the screen is used to monitor the result.
+This manual assumes a live camera, a configured axis controller, and enabled
+joystick functions. The axis controller determines the travel for each
+relay press. Set the required image tolerance in the application.
 
 \begin{tabularx}{\linewidth}{@{}L{0.28\linewidth}Y@{}}
 \toprule
@@ -72,7 +70,8 @@ using the joystick; the screen is used to monitor the result.
 \midrule
 Joystick left/right & Move the motor axis in steps. Holding the joystick repeats the movement. \\
 \ReferenceButton & Capture the current camera image as the new reference image. \\
-\AlignButton & Without valid pixel calibration: calibrate. With valid pixel calibration: align X. \\
+\AlignButton{} or \textbf{Align X} & Start direct X alignment to the current reference. \\
+\textbf{Run pixel calibration} & Measure the X displacement per relay press. \\
 \bottomrule
 \end{tabularx}
 
@@ -90,17 +89,11 @@ positions depend on your setup.
   the \ReferenceButton{} once. The desired reference image must now appear
   on the left.
 
-  \item \textbf{Calibrate if necessary.} If no valid pixel calibration is
-  available, press and release the \AlignButton{} once. Wait for the test
-  movement to finish and for the message \Status{Pixel calibration saved}.
-  An existing valid calibration is reused; in that case, skip this step.
-
   \item \textbf{Position the part approximately.} Use the joystick to move
   the part to be aligned in steps until the feature is clearly visible in the
   image. Then release the joystick and wait for motion to stop.
 
   \item \textbf{Align.} Press and release the \AlignButton{} once.
-  After calibration, a separate button press is required to start alignment.
   Keep the joystick in its neutral position during automatic corrections.
 
   \item \textbf{Check the result.} Check the axis message
@@ -180,29 +173,19 @@ A new capture replaces the previous reference image. Check the position
 before capturing. After restarting the application, capture the required
 reference again using the joystick.
 
-\subsection{Calibrating and aligning with the same button}
+\subsection{Starting direct alignment}
 
-\begin{tabularx}{\linewidth}{@{}L{0.35\linewidth}Y@{}}
-\toprule
-\textbf{State before pressing the button} & \textbf{Effect of the align button} \\
-\midrule
-No valid pixel calibration & The configured test movement is performed and the pixel calibration is determined. \\
-Valid pixel calibration available & Automatic X alignment to the current reference starts. \\
-\bottomrule
-\end{tabularx}
+Press and release the \AlignButton{} once, or click \textbf{Align X}.
+The app compares the new X measurement after each relay nudge and chooses
+the next direction from the change in error. Holding the button starts a
+single attempt. Wait for the current operation to finish before pressing it again.
 
-Press and release the \AlignButton{} once for each operation.
-After successful calibration, alignment starts only with a new button press.
-Holding the button does not trigger a second operation. Button presses during
-an operation are discarded; wait for the operation to finish.
+\subsection{Measuring displacement per press}
 
-\Note{Calibration moves the part.}{Before starting, ensure that sufficient
-travel is available for the configured test distance. There is no automatic
-return movement. The captured reference is retained.}
-
-After changes to the magnification or camera/axis setup, a new calibration
-must be prepared. Contact the person responsible for the setup. The align
-button does not overwrite a calibration that is still stored as valid.
+\textbf{Run pixel calibration} reports an optional measurement in pixels per
+right press. In \textbf{Linear Axis}, set \textbf{Test presses} to a positive
+number for right nudges or a negative number for left nudges. Keep the feature
+visible throughout the test. The part stays at the final position.
 
 \subsection{Cancelling an operation in progress}
 

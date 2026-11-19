@@ -61,11 +61,10 @@
 
 \section{Voraussetzungen und Bedienelemente}
 
-Diese Anleitung setzt eine fertig eingerichtete Anlage voraus: Die Kamera liefert
-ein laufendes Livebild, der Motor ist betriebsbereit und die Joystick-Funktionen
-sind zugeordnet und aktiviert. Toleranz, Schrittweite und Kalibrierstrecke sind
-für die Anwendung vorbereitet. Die Bedienung erfolgt ausschließlich am Joystick;
-der Bildschirm dient zur Kontrolle.
+Diese Anleitung setzt eine Livekamera, eine eingerichtete Achsensteuerung
+und aktivierte Joystick-Funktionen voraus. Die Achsensteuerung legt den
+Verfahrweg pro Relaisimpuls fest. Stellen Sie die gewünschte Bildtoleranz
+in der Anwendung ein.
 
 \begin{tabularx}{\linewidth}{@{}L{0.28\linewidth}Y@{}}
 \toprule
@@ -73,7 +72,8 @@ der Bildschirm dient zur Kontrolle.
 \midrule
 Joystick links/rechts & Die Motorachse schrittweise verfahren. Halten wiederholt die Bewegung. \\
 \Referenz & Das aktuelle Kamerabild als neues Sollbild übernehmen. \\
-\Ausrichten & Ohne gültige Pixelkalibrierung: kalibrieren. Mit gültiger Pixelkalibrierung: X ausrichten. \\
+\Ausrichten{} oder \textbf{Align X} & Die direkte X-Ausrichtung am aktuellen Sollbild starten. \\
+\textbf{Run pixel calibration} & Den X-Versatz pro Relaisimpuls messen. \\
 \bottomrule
 \end{tabularx}
 
@@ -90,17 +90,11 @@ Lage der Taster richtet sich nach Ihrem Aufbau.
   \item \textbf{Referenz aufnehmen.} Nach Stillstand den \Referenz{} einmal drücken
   und loslassen. Links muss nun das gewünschte Sollbild erscheinen.
 
-  \item \textbf{Bei Bedarf kalibrieren.} Fehlt eine gültige Pixelkalibrierung,
-  den \Ausrichten{} einmal drücken und loslassen. Die Testbewegung und die
-  Meldung \Status{Pixel calibration saved} abwarten. Eine vorhandene gültige
-  Kalibrierung wird weiterverwendet; dann entfällt dieser Schritt.
-
   \item \textbf{Teil vorpositionieren.} Das auszurichtende Teil mit dem
   Joystick schrittweise verfahren, bis das Merkmal im Bild gut sichtbar ist.
   Danach den Joystick loslassen und Stillstand abwarten.
 
   \item \textbf{Ausrichten.} Den \Ausrichten{} einmal drücken und loslassen.
-  Nach einer Kalibrierung ist hierfür ein weiterer Tastendruck erforderlich.
   Während der automatischen Korrekturen den Joystick in Neutralstellung lassen.
 
   \item \textbf{Ergebnis kontrollieren.} Die Achsenmeldung
@@ -181,30 +175,21 @@ Eine neue Aufnahme ersetzt das bisherige Sollbild. Prüfen Sie deshalb die
 Position vor der Aufnahme. Nehmen Sie nach einem Neustart die benötigte
 Referenz wieder über den Joystick auf.
 
-\subsection{Kalibrieren und ausrichten mit demselben Taster}
+\subsection{Direkte X-Ausrichtung starten}
 
-\begin{tabularx}{\linewidth}{@{}L{0.35\linewidth}Y@{}}
-\toprule
-\textbf{Zustand vor dem Tastendruck} & \textbf{Wirkung des Ausrichttasters} \\
-\midrule
-Keine gültige Pixelkalibrierung & Die eingestellte Testbewegung wird ausgeführt und die Pixelkalibrierung ermittelt. \\
-Gültige Pixelkalibrierung vorhanden & Die automatische X-Ausrichtung zur aktuellen Referenz startet. \\
-\bottomrule
-\end{tabularx}
+Drücken Sie den \Ausrichten{} einmal und lassen Sie ihn wieder los oder
+klicken Sie auf \textbf{Align X}. Die Anwendung vergleicht den X-Versatz nach
+jedem Relaisimpuls mit dem vorherigen Messwert und bestimmt daraus die
+nächste Richtung. Halten startet einen einzelnen Vorgang. Warten Sie vor dem
+nächsten Tastendruck das Ende des laufenden Vorgangs ab.
 
-Drücken Sie den \Ausrichten{} jeweils einmal und lassen Sie ihn wieder los.
-Nach erfolgreicher Kalibrierung startet die Ausrichtung erst mit einem neuen
-Tastendruck. Halten löst keinen zweiten Vorgang aus. Tastendrücke während eines
-laufenden Vorgangs werden verworfen; warten Sie dessen Ende ab.
+\subsection{Versatz pro Relaisimpuls messen}
 
-\Hinweis{Die Kalibrierung bewegt das Teil.}{Vorher muss ausreichend Verfahrweg
-für die vorbereitete Teststrecke vorhanden sein. Es erfolgt keine automatische
-Rückfahrt. Die aufgenommene Referenz bleibt erhalten.}
-
-Nach Änderungen an Vergrößerung oder Kamera-/Achsaufbau muss eine neue
-Kalibrierung vorbereitet werden. Wenden Sie sich dafür an die zuständige
-Person. Der Ausrichttaster überschreibt keine weiterhin als gültig gespeicherte
-Kalibrierung.
+\textbf{Run pixel calibration} ermittelt bei Bedarf den X-Versatz in Pixeln
+pro Rechtsimpuls. Stellen Sie in \textbf{Linear Axis} unter \textbf{Test presses}
+eine positive Anzahl für Rechtsimpulse oder eine negative für Linksimpulse ein.
+Das Merkmal muss während der Messung sichtbar bleiben. Das Teil bleibt an der
+Endposition.
 
 \subsection{Laufenden Vorgang abbrechen}
 
