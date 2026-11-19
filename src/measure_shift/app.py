@@ -17,6 +17,7 @@ from PySide6 import QtWidgets
 from PySide6 import QtCore, QtGui
 import pyqtgraph as pg
 
+from .brickd import bundled_brickd
 from .models import FramePacket, MatchConfig, ReferenceSnapshot, Region, new_id
 from .motion import REFERENCE_CAPTURE_INTERVAL_S, MotionConfig, MotionContext, MotionWorker
 from .motion_widgets import AxisKeyboardFilter, MotionControls, MotionDock
@@ -1334,19 +1335,22 @@ def main(argv=None):
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     application.setApplicationName("Measure Shift")
     application.setOrganizationName("Measure Shift")
-    window = MainWindow()
-    window.show()
-    def start():
-        kind = "demo" if args.demo else args.source or window.source_kind.currentText().lower()
-        remembered = (window.device.currentData() or "") if kind == window.source_kind.currentText().lower() else ""
-        identifier = (args.device or remembered) if kind in ("ids", "basler") else ""
-        path = (args.path or remembered) if kind in ("images", "video") else args.path
-        window.start_source(kind, identifier=identifier, path=path,
-                            auto_reference=kind == "demo" and not args.reference)
-        if args.reference:
-            window._task(lambda: FramePacket.from_array(read_gray(args.reference), Path(args.reference).name), window.set_reference)
-    QtCore.QTimer.singleShot(0, start)
-    return application.exec()
+    with bundled_brickd():
+        window = MainWindow()
+        window.show()
+
+        def start():
+            kind = "demo" if args.demo else args.source or window.source_kind.currentText().lower()
+            remembered = (window.device.currentData() or "") if kind == window.source_kind.currentText().lower() else ""
+            identifier = (args.device or remembered) if kind in ("ids", "basler") else ""
+            path = (args.path or remembered) if kind in ("images", "video") else args.path
+            window.start_source(kind, identifier=identifier, path=path,
+                                auto_reference=kind == "demo" and not args.reference)
+            if args.reference:
+                window._task(lambda: FramePacket.from_array(read_gray(args.reference), Path(args.reference).name), window.set_reference)
+
+        QtCore.QTimer.singleShot(0, start)
+        return application.exec()
 
 
 if __name__ == "__main__":

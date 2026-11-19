@@ -9,6 +9,11 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     exit 1
 fi
 
+if [[ ! -x /usr/bin/brickd ]]; then
+    echo "The build needs /usr/bin/brickd to copy into the bundle." >&2
+    exit 1
+fi
+
 build_python="${MEASURE_SHIFT_BUILD_PYTHON:-/usr/bin/python3}"
 venv_dir="$project_root/build/linux-venv"
 if [[ "${1:-}" != "--skip-install" ]]; then
@@ -31,6 +36,12 @@ XDG_CACHE_HOME="$project_root/build/cache" "$venv_dir/bin/python" -m PyInstaller
     --collect-all pyueye \
     --collect-submodules tinkerforge \
     "$venv_dir/bin/measure-shift"
+
+brickd_dir=dist/measure-shift/brickd
+install -Dm755 /usr/bin/brickd "$brickd_dir/brickd"
+install -m644 scripts/brickd.conf "$brickd_dir/brickd.conf"
+install -m644 /usr/share/doc/brickd/copyright "$brickd_dir/copyright"
+install -m644 /usr/share/common-licenses/GPL-2 "$brickd_dir/GPL-2"
 
 "$venv_dir/bin/python" -m pip freeze > dist/measure-shift/build-requirements.txt
 tar -czf "dist/measure-shift-linux-$(uname -m).tar.gz" -C dist measure-shift
