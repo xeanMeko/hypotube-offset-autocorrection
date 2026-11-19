@@ -56,15 +56,11 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(1))
         dock.align_channel.setCurrentIndex(dock.align_channel.findData(2))
         dock.active_high.setChecked(False)
-        dock.invert_direction.setChecked(False)
         dock.apply_inputs_button.click()
-        dock.motor_current.setValue(900)
-        dock.motor_current.editingFinished.emit()
-        dock.resolution.setCurrentIndex(dock.resolution.findData(16))
-        dock.distance.setValue(7)
-        dock.speed.setValue(125)
+        dock.pulse_ms.setValue(120)
+        dock.release_ms.setValue(140)
         dock.frequency.setValue(4)
-        dock.test_steps.setValue(-250)
+        dock.test_presses.setValue(-250)
         window.tolerance.setValue(2.5)
         # Internal quality thresholds survive changes to the visible controls.
         window._set_config(replace(window.config, min_response=.25, scale=.5))
@@ -86,8 +82,8 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert motion["left_channel"] == 0 and motion["right_channel"] == 3
         assert motion["reference_channel"] == 1
         assert motion["align_channel"] == 2
-        assert motion["motor_current_ma"] == 900 and motion["step_resolution"] == 16
-        assert motion["calibration_steps"] == -250
+        assert motion["pulse_ms"] == 120 and motion["release_ms"] == 140
+        assert motion["calibration_presses"] == -250
         assert config.scale == .5 and tolerance == 2.5 and hz == 3
         assert camera == {"fps": 21, "exposure_ms": 5.5}
     finally:
@@ -102,11 +98,11 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert dock.config.left_channel == 0 and dock.config.right_channel == 3
         assert dock.config.reference_channel == 1 and dock.reference_channel.currentData() == 1
         assert dock.config.align_channel == 2 and dock.align_channel.currentData() == 2
-        assert not dock.config.active_high and not dock.config.invert_direction
-        assert dock.config.motor_current_ma == 900 and dock.config.step_resolution == 16
-        assert (dock.config.jog_distance, dock.config.motor_speed, dock.config.repeat_hz) == (7, 125, 4)
-        assert dock.config.calibration_steps == -250 and dock.test_steps.value() == -250
-        assert "-250 driver steps" in restored.motion_controls.calibrate_button.toolTip()
+        assert not dock.config.active_high
+        assert dock.config.pulse_ms == 120 and dock.config.release_ms == 140
+        assert dock.config.repeat_hz == 4
+        assert dock.config.calibration_presses == -250 and dock.test_presses.value() == -250
+        assert "250 left relay" in restored.motion_controls.calibrate_button.toolTip()
         assert restored.config.scale == .5 and restored.config.min_response == .25
         assert restored.tolerance.value() == 2.5 and restored.dock.rate.value() == 3
         assert restored.source_kind.currentText() == "Basler"
@@ -202,10 +198,10 @@ def test_corrupt_settings_do_not_prevent_startup(application, tmp_path):
     window = MainWindow(settings_path=path)
     try:
         assert "Could not restore previous settings" in window.notice.text()
-        assert window.motion_dock.config.motor_current_ma == 800
+        assert window.motion_dock.config.pulse_ms == 80
     finally:
         window.close()
-    assert load_profile(path, include_motion=True)[4]["motor_current_ma"] == 800
+    assert load_profile(path, include_motion=True)[4]["pulse_ms"] == 80
 
 
 def test_unwritable_preferences_do_not_prevent_closing(application, tmp_path):

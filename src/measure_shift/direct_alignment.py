@@ -1,60 +1,50 @@
-"""Experimental X search using settled target error, without a pixel scale."""
+"""Choose fixed joystick presses from settled, signed camera X measurements."""
 from __future__ import annotations
+
+from .joystick import Direction
 
 
 class DirectXSearch:
-    """Grow finite moves, then halve on target crossings to refine alignment.
+    """Probe right, then use the outcome of each nudge to choose the next one."""
 
-    Repeat through backlash without assuming driver travel means image travel.
-    The caller handles tolerance, fresh feedback, and operation limits. Keep
-    experiment-specific tuning here so removing the extra mode is straightforward.
-    """
-
-    INITIAL_STEPS = 8
-
-    def __init__(self, max_steps: int):
-        self.max_steps = max_steps
-        self._raw_position: int | None = None
+    def __init__(self, tolerance_px: float = 0.):
         self._previous_dx: float | None = None
-        self._direction = 1
-        self._step = min(self.INITIAL_STEPS, max_steps)
-        self._refining = False
+        self._last_crossing: tuple[float, float] | None = None
+        self._direction = Direction.RIGHT
+        self._change_threshold = max(.05, tolerance_px * .1)
         self._best_error = float("inf")
-        self._limited_no_progress = 0
+        self._no_progress = 0
+        self._probing = True
+        self.crossed_target = False
 
-    def next_steps(self, position: int, dx: float) -> int:
-        if self._raw_position is not None:
-            print(f"Direct X alignment: position {position}, dx {dx:.3f}, step {self._step}, direction {self._direction}, best error {self._best_error:.3f}")
-            if position == self._raw_position:
-                raise ValueError("Direct X alignment stopped: motor position did not change")
-        self._raw_position = position
-
+    def next_direction(self, dx: float) -> Direction:
+        """Select one press for an out-of-tolerance measurement."""
         error = abs(dx)
-        if error < self._best_error:
-            # print(f"Direct X alignment: new best error {error:.3f} < previous {self._best_error:.3f}")
-            self._best_error = error
-            self._limited_no_progress = 0
-        elif self._step == self.max_steps:
-            # print(f"Direct X alignment: no progress for {self._limited_no_progress + 1} maximum-size moves")
-            self._limited_no_progress += 1
-            if self._limited_no_progress >= 5:
-                raise ValueError("Direct X alignment stopped after 5 maximum-size moves without progress")
+        previous = self._previous_dx
+        self.crossed_target = previous is not None and (dx > 0) != (previous > 0)
+        if self._probing and previous is not None and dx != previous:
+            self._probing = False
+            # Count progress from the first measured response, after any
+            # initial slack, so reversing the probe has time to take up slack.
+            self._best_error = float("inf")
+        if self.crossed_target:
+            if self._last_crossing is not None:
+                start, end = self._last_crossing
+                same_endpoints = (abs(dx - start) <= self._change_threshold and
+                                  abs(previous - end) <= self._change_threshold)
+                if same_endpoints and error <= abs(previous):
+                    raise ValueError("Requested X tolerance is smaller than one joystick nudge can resolve")
+            self._last_crossing = previous, dx
+            self._direction = Direction(-self._direction)
+        elif previous is not None and error > abs(previous):
+            self._direction = Direction(-self._direction)
 
-        if self._previous_dx is not None:
-            # print(f"Direct X alignment: previous dx {self._previous_dx:.3f}, current dx {dx:.3f}")
-            crossed = (dx > 0) != (self._previous_dx > 0)
-            if crossed and self._step == 1:
-                raise ValueError("Requested X tolerance is smaller than one driver step can resolve")
-            if crossed or error > abs(self._previous_dx):
-                self._direction *= -1
-                self._step = max(1, self._step // 2)
-                self._refining |= crossed
-                # print(f"Direct X alignment: crossed target, reversing direction to {self._direction}, halving step to {self._step}, refining {self._refining}")
-            elif not self._refining:
-                # print(f"Direct X alignment: no crossing, doubling step from {self._step} to {min(self.max_steps, self._step * 2)}")
-                self._step = min(self.max_steps, self._step * 2)
-            # During refinement, unchanged image error can be backlash on a
-            # reversal. Keep taking finite moves until the camera sees motion;
-            # never shrink a motor-position bracket around this dead travel.
+        if error < self._best_error:
+            self._best_error = error
+            self._no_progress = 0
+        else:
+            self._no_progress += 1
+            if self._no_progress >= 10:
+                raise ValueError("Direct X alignment stopped after 10 joystick nudges without progress")
         self._previous_dx = dx
-        return self._direction * self._step
+        return self._direction

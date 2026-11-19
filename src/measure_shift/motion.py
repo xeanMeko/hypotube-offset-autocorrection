@@ -14,7 +14,8 @@ import time
 from typing import Callable
 
 from .direct_alignment import DirectXSearch
-from .motion_hardware import HardwareState, TinkerforgeMotionHardware
+from .joystick import INPUT_DEBOUNCE_S, Direction, JoystickPort, JoystickState, WiredJoystick
+from .motion_hardware import TinkerforgeMotionHardware
 from .workers import LatestValue, MeasurementWorker
 
 
@@ -25,35 +26,46 @@ REFERENCE_CAPTURE_INTERVAL_S = 1.0
 class MotionConfig:
     host: str = "localhost"
     port: int = 4223
-    stepper_uid: str = "2eoQ"
     digital_uid: str = "27s4"
     left_channel: int = 2
     right_channel: int = 1
     reference_channel: int | None = None
     align_channel: int | None = 3
     active_high: bool = True
-    invert_direction: bool = True
-    motor_current_ma: int | None = 800
-    step_resolution: int = 8
-    interpolation: bool = True
-    jog_unit: str = "driversteps"
-    jog_distance: float = 1.0
-    motor_speed: int = 200
     repeat_hz: float = 2.0
-    calibration_steps: int = 100
-    pixels_per_step: float | None = None
+    calibration_presses: int = 1
     calibration_source_id: str = ""
     calibration_shape: tuple[int, int] | None = None
+
+    output_uid: str = "2j7T"
+    pulse_ms: int = 80
+    release_ms: int = 100
+    pixels_per_right_press: float | None = None
+    axis_mode: str = "external"
+    stepper_uid: str = "2eoQ"
 
     def validated(self) -> MotionConfig:
         if not isinstance(self.host, str) or not self.host.strip():
             raise ValueError("Brick Daemon host is required")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError("Brick Daemon port must be between 1 and 65535")
-        if not all(isinstance(v, str) and v.strip() for v in (self.stepper_uid, self.digital_uid)):
-            raise ValueError("Both motion Bricklet UIDs are required")
-        if self.stepper_uid == self.digital_uid:
+        if not isinstance(self.digital_uid, str):
+            raise ValueError("Digital In UID must be text")
+        uids = [self.output_uid, self.digital_uid] if self.digital_uid else [self.output_uid]
+        if self.axis_mode not in ("external", "bench"):
+            raise ValueError("Select External machine or Silent Stepper bench")
+        if not isinstance(self.stepper_uid, str):
+            raise ValueError("Bench stepper UID must be text")
+        if self.axis_mode == "bench":
+            uids.append(self.stepper_uid)
+        if not all(isinstance(v, str) and v.strip() for v in uids):
+            raise ValueError("Enter a UID for each required motion Bricklet")
+        if len(set(uids)) != len(uids):
             raise ValueError("Motion Bricklets must have different UIDs")
+        if type(self.pulse_ms) is not int or not 1 <= self.pulse_ms <= 5000:
+            raise ValueError("Joystick press duration must be between 1 and 5000 ms")
+        if type(self.release_ms) is not int or not 1 <= self.release_ms <= 10000:
+            raise ValueError("Joystick release interval must be between 1 and 10000 ms")
         if any(type(v) is not int or v not in range(4) for v in (self.left_channel, self.right_channel)):
             raise ValueError("Joystick channels must be between 0 and 3")
         if self.left_channel == self.right_channel:
@@ -67,55 +79,31 @@ class MotionConfig:
                 raise ValueError("Align X channel must be disabled or between 0 and 3")
             if self.align_channel in (self.left_channel, self.right_channel, self.reference_channel):
                 raise ValueError("Align X must use a different digital input from left, right and reference capture")
-        if any(type(v) is not bool for v in (self.active_high, self.invert_direction, self.interpolation)):
-            raise ValueError("Input polarity, direction and interpolation must be booleans")
-        if self.motor_current_ma is not None and (type(self.motor_current_ma) is not int or not 360 <= self.motor_current_ma <= 1640):
-            raise ValueError("Enter the motor's permitted current, between 360 and 1640 mA")
-        if type(self.step_resolution) is not int or self.step_resolution not in (1, 2, 4, 8, 16, 32, 64, 128, 256):
-            raise ValueError("Step resolution must be a supported microstep denominator")
-        if self.jog_unit not in {"driversteps", "pixels"}:
-            raise ValueError("Unknown jog distance unit")
-        for name in ("jog_distance", "repeat_hz"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-                raise ValueError(f"{name.replace('_', ' ').capitalize()} must be positive and finite")
+        if type(self.active_high) is not bool:
+            raise ValueError("Input polarity must be a boolean")
+        if (isinstance(self.repeat_hz, bool) or not isinstance(self.repeat_hz, (int, float)) or
+                not math.isfinite(self.repeat_hz)):
+            raise ValueError("Hold repeat frequency must be finite")
         if not .1 <= self.repeat_hz <= 10:
             raise ValueError("Hold repeat frequency must be between 0.1 and 10 Hz")
-        if type(self.calibration_steps) is not int or not 1 <= abs(self.calibration_steps) <= 1_000_000:
-            raise ValueError("Calibration test move must be a nonzero integer within ±1000000 driver steps")
-        if self.pixels_per_step is not None and (isinstance(self.pixels_per_step, bool) or
-                not isinstance(self.pixels_per_step, (int, float)) or
-                not math.isfinite(self.pixels_per_step) or self.pixels_per_step == 0):
+        if type(self.calibration_presses) is not int or not 1 <= abs(self.calibration_presses) <= 1_000_000:
+            raise ValueError("Calibration needs a nonzero integer within ±1000000 joystick presses")
+        scale = self.pixels_per_right_press
+        if scale is not None and (isinstance(scale, bool) or not isinstance(scale, (int, float))
+                                  or not math.isfinite(scale) or scale == 0):
             raise ValueError("Pixel calibration scale must be finite and nonzero")
         if not isinstance(self.calibration_source_id, str):
             raise ValueError("Calibration source identifier must be text")
         if self.calibration_shape is not None and (len(self.calibration_shape) != 2 or any(type(v) is not int or v <= 0 for v in self.calibration_shape)):
             raise ValueError("Calibration image geometry must contain two positive integers")
-        self.distance_steps()
-        self.speed_steps()
         return self
 
-    def distance_steps(self, value: float | None = None) -> int:
-        value = self.jog_distance if value is None else value
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-            raise ValueError("Nudge distance must be positive and finite")
-        if self.jog_unit == "pixels":
-            if self.pixels_per_step is None:
-                raise ValueError("Calibrate image pixels per driver step before using pixels")
-            requested_steps = value / abs(self.pixels_per_step)
-        else:
-            requested_steps = value
-        if not math.isfinite(requested_steps) or requested_steps < 1:
-            raise ValueError("Nudge distance must resolve to at least one driver step and fit the motor range")
-        steps = round(requested_steps)
-        if not 1 <= steps <= 2_147_483_647:
-            raise ValueError("Nudge distance must resolve to at least one driver step and fit the motor range")
-        return steps
+    def without_press_scale(self) -> MotionConfig:
+        return replace(self, pixels_per_right_press=None, calibration_source_id="", calibration_shape=None)
 
-    def speed_steps(self) -> int:
-        if type(self.motor_speed) is not int or not 1 <= self.motor_speed <= 65_535:
-            raise ValueError("Motor speed must be an integer between 1 and 65535 driver steps/s")
-        return self.motor_speed
+    def with_press_scale(self, pixels: float, context: MotionContext) -> MotionConfig:
+        return replace(self, pixels_per_right_press=pixels, calibration_source_id=context.source_id,
+                       calibration_shape=context.shape).validated()
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -125,9 +113,14 @@ class MotionConfig:
         if not isinstance(value, dict):
             raise ValueError("Motion settings must be an object")
         names = {f.name for f in fields(cls)}
-        # Retired jog_speed values depended on the nudge unit. Old profiles
-        # start with the default motor speed in driver steps/s instead.
         kwargs = {key: item for key, item in value.items() if key in names}
+        if kwargs.get("stepper_uid") is None and kwargs.get("axis_mode", "external") == "external":
+            kwargs["stepper_uid"] = cls.stepper_uid
+        if "pixels_per_right_press" not in kwargs and value.get("bench_axis") is False:
+            kwargs["pixels_per_right_press"] = value.get("factory_pixels_per_press")
+        if kwargs.get("output_uid") == "23GY":
+            kwargs["output_uid"] = cls.output_uid
+            kwargs["pixels_per_right_press"] = None
         if "align_channel" not in kwargs and cls.align_channel in (
                 kwargs.get("left_channel", cls.left_channel),
                 kwargs.get("right_channel", cls.right_channel),
@@ -138,26 +131,20 @@ class MotionConfig:
         if type(kwargs.get("reference_channel")) is int and kwargs["reference_channel"] in (
                 kwargs.get("left_channel", cls.left_channel), kwargs.get("right_channel", cls.right_channel)):
             # Older profiles allowed capture to share a joystick contact.
-            # Preserve movement wiring and motor setup; disable the capture
-            # trigger until it is assigned its own input.
+            # Preserve the joystick wiring and disable the shared capture trigger.
             kwargs["reference_channel"] = None
-        if kwargs.get("jog_unit") == "mm":
-            # Older profiles stored physical units. Preserve their effective
-            # motor move while retiring the millimetre setting.
-            scale = value.get("steps_per_mm")
-            if (isinstance(scale, bool) or not isinstance(scale, (int, float)) or
-                    not math.isfinite(scale) or scale <= 0):
-                raise ValueError("Legacy millimetre settings need positive driver steps per millimetre")
-            amount = value.get("jog_distance", cls.jog_distance)
-            if (isinstance(amount, bool) or not isinstance(amount, (int, float)) or
-                    not math.isfinite(amount) or amount <= 0):
-                raise ValueError("Legacy jog distance must be positive and finite")
-            kwargs["jog_unit"] = "driversteps"
-            kwargs["jog_distance"] = amount * scale
-        if kwargs.get("motor_current_ma") is None:
-            kwargs["motor_current_ma"] = 800
-        if kwargs.get("calibration_shape") is not None:
+        if kwargs.get("pixels_per_right_press") is None:
+            kwargs["calibration_source_id"] = ""
+            kwargs["calibration_shape"] = None
+        elif kwargs.get("calibration_shape") is not None:
             kwargs["calibration_shape"] = tuple(kwargs["calibration_shape"])
+        if "calibration_presses" not in kwargs and "calibration_steps" in value:
+            steps = value["calibration_steps"]
+            if type(steps) is not int or not 1 <= abs(steps) <= 1_000_000:
+                raise ValueError("Invalid legacy calibration move")
+            # The old driver-step distance cannot determine relay travel.
+            # Preserve the test direction with a single relay press.
+            kwargs["calibration_presses"] = -1 if (steps < 0) != bool(value.get("invert_direction", True)) else 1
         return cls(**kwargs).validated()
 
 
@@ -213,8 +200,7 @@ class MotionFeedback:
 @dataclass(frozen=True)
 class MotionAction:
     kind: str
-    steps: int = 0
-    velocity: int = 0
+    direction: Direction | None = None
     after: float = 0.0
 
 
@@ -233,27 +219,18 @@ class MotionStatus:
     phase: str = "disconnected"
     message: str = "Connect motion hardware to begin"
     inputs4: tuple[bool, bool, bool, bool] = (False, False, False, False)
-    position: int = 0
-    velocity: int = 0
-    remaining: int = 0
-    motor_current_ma: int = 0
-    step_resolution: int = 8
-    interpolation: bool = True
-    pixels_per_step: float | None = None
-    calibration_source_id: str = ""
-    calibration_shape: tuple[int, int] | None = None
     corrections: int = 0
     dx: float | None = None
     config: MotionConfig = MotionConfig()
     config_revision: int = 0
     reference_capture: ReferenceCaptureRequest | None = None
     connection_revision: int = 0
+    busy: bool = False
 
 
 class MotionController:
     """A tick-driven state machine producing finite hardware actions."""
 
-    INPUT_DEBOUNCE_S = .03
     SETTLE_S = .20
     MAX_OPERATION_S = 60.0
     MAX_CORRECTIONS = 100
@@ -270,7 +247,7 @@ class MotionController:
         self.armed = False
         self.phase = "disconnected"
         self.message = "Connect motion hardware to begin"
-        self.state = HardwareState()
+        self.state = JoystickState()
         self.inputs4 = (False, False, False, False)
         self.reference_capture: ReferenceCaptureRequest | None = None
         self._reference_level: bool | None = None
@@ -296,14 +273,12 @@ class MotionController:
         self._last_consumed_frame: str | None = None
         self._feedback: MotionFeedback | None = None
         self._feedback_retry_started_at: float | None = None
-        self._calibration_start = (0.0, 0)
-        self._calibration_end_position = 0
-        self._calibration_steps = 0
+        self._calibration_start_dx = 0.0
+        self._calibration_presses = 0
+        self._presses_sent = 0
         self._corrections = 0
         self._confirmations = 0
-        self._previous_error: float | None = None
-        self._no_progress = 0
-        self._direct_alignment: DirectXSearch | None = None
+        self._alignment_search: DirectXSearch | None = None
         self._stopping = False
 
     def configure(self, config: MotionConfig, revision: int = 0) -> None:
@@ -311,14 +286,14 @@ class MotionController:
         old = self.config
         if self._operation or self._pending_operation:
             self.cancel("Motion settings changed", disarm=False)
-        if config.step_resolution != old.step_resolution:
-            config = self._without_scales(config)
-        if config.pixels_per_step is not None and not config.calibration_source_id and self.context.shape is not None:
+        press_changed = any(getattr(old, name) != getattr(config, name) for name in
+                            ("host", "port", "output_uid", "left_channel", "right_channel", "pulse_ms", "axis_mode", "stepper_uid"))
+        if press_changed and config.pixels_per_right_press == old.pixels_per_right_press:
+            config = config.without_press_scale()
+        if config.pixels_per_right_press is not None and not config.calibration_source_id and self.context.shape is not None:
             config = replace(config, calibration_source_id=self.context.source_id, calibration_shape=self.context.shape)
-        setup_changed = any(getattr(old, name) != getattr(config, name) for name in
-                            ("motor_current_ma", "step_resolution", "interpolation"))
-        controls_changed = any(getattr(old, name) != getattr(config, name) for name in
-                               ("left_channel", "right_channel", "active_high", "invert_direction"))
+        controls_changed = press_changed or any(getattr(old, name) != getattr(config, name) for name in
+                                                ("active_high", "release_ms"))
         if config.reference_channel != old.reference_channel:
             self._reference_level = None
             self.reference_capture = None
@@ -326,30 +301,16 @@ class MotionController:
             self._align_level = None
         self.config = config
         self.config_revision = revision
-        if setup_changed:
-            self.setup_applied = False
-            self.cancel("Motor settings changed; click Enable motor to apply them", disarm=True)
-        elif controls_changed:
-            self.cancel("Joystick settings changed; release both directions", disarm=False)
+        if controls_changed and self.connected:
+            self.cancel("Joystick settings changed. Release both directions", disarm=False)
         self._invalidate_camera_scale()
 
-    @staticmethod
-    def _without_scales(config: MotionConfig) -> MotionConfig:
-        try:
-            distance = config.distance_steps()
-        except ValueError:
-            distance = 1
-        loses_unit = config.jog_unit == "pixels"
-        return replace(config, pixels_per_step=None, calibration_source_id="", calibration_shape=None,
-                       jog_unit="driversteps" if loses_unit else config.jog_unit,
-                       jog_distance=float(distance) if loses_unit else config.jog_distance)
-
     def _invalidate_camera_scale(self):
-        if self.config.pixels_per_step is None or not self.context.source_id or self.context.shape is None:
+        if self.config.pixels_per_right_press is None or not self.context.source_id or self.context.shape is None:
             return
         if (self.config.calibration_source_id != self.context.source_id or
                 self.config.calibration_shape != self.context.shape):
-            self.config = self._without_scales(self.config)
+            self.config = self.config.without_press_scale()
             self.message = "Camera or image geometry changed; calibrate image pixels again"
 
     def set_context(self, context: MotionContext) -> None:
@@ -375,7 +336,7 @@ class MotionController:
     def submit_feedback(self, feedback: MotionFeedback | None) -> None:
         self._feedback = feedback
 
-    def on_connected(self, state: HardwareState) -> None:
+    def on_connected(self, state: JoystickState) -> None:
         self.connected = True
         self._reference_level = None
         self.reference_capture = None
@@ -390,10 +351,11 @@ class MotionController:
         self._pending_operation = None
         self._stopping = False
         self.phase = "connected"
-        self.message = "Motor is disabled. Click Enable motor to apply settings and begin"
+        self.message = "Connected. Enable movement with the controls released"
 
     def on_disconnected(self, message="Motion hardware disconnected") -> None:
         self.connected = self.setup_applied = self.armed = False
+        self.state = JoystickState()
         self._reference_level = None
         self.reference_capture = None
         self._align_level = None
@@ -410,11 +372,11 @@ class MotionController:
         self._actions.clear()
         self._stopping = False
         self._neutral_required = True
-        self.phase, self.message = "connected", "Motor settings applied. Click Enable motor with joystick and arrow keys released"
+        self.phase, self.message = "connected", "Setup applied. Enable movement with joystick and arrow keys released"
 
     def arm(self, *, wait_for_neutral: bool = False):
         if not self.connected or not self.setup_applied:
-            self.message = "Connect hardware and apply motor settings before enabling movement"
+            self.message = "Connect hardware and apply setup before enabling movement"
             return
         if self.state.fault:
             self.message = self.state.fault
@@ -432,8 +394,8 @@ class MotionController:
                 self.message += ". If joystick inputs are LOW when released, check Active high"
             if not wait_for_neutral:
                 return
-        if self._move or self._stopping or self.state.velocity or self.state.remaining:
-            self.message = "Wait for the motor to stop, then click Enable motor"
+        if self._move or self._stopping or self.state.busy:
+            self.message = "Wait for the nudge to finish, then enable movement"
             return
         self.armed = True
         self._neutral_required = wait_for_neutral
@@ -447,21 +409,20 @@ class MotionController:
         self._actions.append(MotionAction("enable"))
 
     def request_align(self):
-        self._pending_operation = ("align", 0)
-
-    def request_align_direct(self):
         self._pending_operation = ("align_direct", 0)
 
-    def request_calibration(self, steps: int):
-        if type(steps) is not int or steps == 0 or abs(steps) > 2_147_483_647:
-            raise ValueError("Calibration needs a nonzero signed number of driver steps")
-        self._pending_operation = ("calibration", steps)
+    request_align_direct = request_align
+
+    def request_calibration(self, presses: int):
+        if type(presses) is not int or not 1 <= abs(presses) <= 1_000_000:
+            raise ValueError("Calibration needs a nonzero signed number of joystick presses (±1000000)")
+        self._pending_operation = ("calibration", presses)
 
     def cancel(self, message="Motion stopped; release both directions before the next press", *, disarm=False):
         # Recoverable operation failures stop motion without requiring another
         # Enable click. Hardware faults and setup changes explicitly disarm.
         self._operation = self._pending_operation = None
-        self._direct_alignment = None
+        self._alignment_search = None
         self._feedback_retry_started_at = None
         self._confirmations = 0
         self._neutral_required = True
@@ -490,21 +451,26 @@ class MotionController:
 
     def _freshness(self, now):
         self._fresh_cutoff = now + max(self.SETTLE_S, self.context.settling_s)
+        if self._stage == "postmove" and (
+                self._operation != "calibration" or self._presses_sent < abs(self._calibration_presses)):
+            self._fresh_cutoff = max(self._fresh_cutoff, self._next_nudge_at)
         self._required_generation = None
         self._last_consumed_frame = None
         self._actions.append(MotionAction("freshness", after=self._fresh_cutoff))
 
-    def _start_move(self, steps, now, purpose):
-        velocity = self.config.speed_steps()
-        self._move = (purpose, self.state.position, steps, now, max(5.0, abs(steps) / velocity * 3 + 1))
-        self._actions.append(MotionAction("move", steps=steps, velocity=velocity))
+    def _press(self, direction: Direction, now: float, purpose: str):
+        self._move = (purpose, now, self.state.timeout_s)
+        self._actions.append(MotionAction("pulse", direction))
+        self._next_nudge_at = now + 1 / self.config.repeat_hz
         self.phase = {"jog": "jogging", "align": "aligning", "calibration": "calibrating"}[purpose]
 
-    def _start_operation(self, kind, steps, now):
-        if not self.armed or not self.setup_applied:
-            self.message = "Click Enable motor before using camera feedback"
+    def _start_operation(self, kind, presses, now):
+        if self._operation:
             return
-        if self._move or self.state.velocity or self.state.remaining or self._stopping:
+        if not self.armed or not self.setup_applied:
+            self.message = "Enable movement before using camera feedback"
+            return
+        if self._move or self.state.busy or self._stopping:
             self.message = "Wait for the current nudge to finish"
             return
         if any(self._logical_inputs(raw=True)):
@@ -513,20 +479,18 @@ class MotionController:
         if not self.context.live_camera_ready:
             self.message = "A running, unpaused IDS or Basler camera is required"
             return
-        if kind in {"align", "align_direct"} and not self.context.camera_ready:
+        if kind == "align_direct" and not self.context.camera_ready:
             self.message = "A running, unpaused IDS or Basler camera and a reference are required"
-            return
-        if kind == "align" and self.config.pixels_per_step is None:
-            self.message = "Calibrate image pixels per driver step before aligning"
             return
         self._operation, self._stage = kind, "baseline"
         self._op_started = now
         self._feedback_retry_started_at = None
-        self._calibration_steps = steps
-        self._corrections = self._confirmations = self._no_progress = 0
-        self._previous_error = None
-        self._direct_alignment = (DirectXSearch(max(DirectXSearch.INITIAL_STEPS, self.config.distance_steps()))
-                                  if kind == "align_direct" else None)
+        self._calibration_presses = presses
+        self._presses_sent = 0
+        self._corrections = self._confirmations = 0
+        self._alignment_search = None
+        if kind == "align_direct":
+            self._alignment_search = DirectXSearch(self.context.tolerance_px)
         self._feedback = None
         self._neutral_required = True
         self.phase = "calibrating" if kind == "calibration" else "aligning"
@@ -539,9 +503,9 @@ class MotionController:
         if feedback.usable:
             return True
         # Permit uncertain estimates for coarse alignment only. Calibration
-        # still needs valid measurements to establish the motor's pixel scale.
+        # still needs valid measurements to establish the displacement per press.
         threshold = max(self.UNCERTAIN_ALIGNMENT_MIN_OFFSET_PX, self.context.tolerance_px)
-        return (self._operation in {"align", "align_direct"} and feedback.validity == "uncertain"
+        return (self._operation == "align_direct" and feedback.validity == "uncertain"
                 and max(abs(feedback.dx), abs(feedback.dy)) > threshold)
 
     def _retry_operation_feedback(self, now, reason):
@@ -569,11 +533,10 @@ class MotionController:
                 self.cancel("Fresh camera measurement timed out")
             return None
         if not self._feedback_usable(feedback):
-            if (self._operation in {"align", "align_direct"} and feedback.validity == "uncertain"
+            if (self._operation == "align_direct" and feedback.validity == "uncertain"
                     and math.isfinite(feedback.dx) and math.isfinite(feedback.dy)):
                 self._retry_operation_feedback(now, "Camera match is uncertain at low offset; a valid match is required")
             else:
-                print(f"DEBUG: feedback unusable: usable={feedback.usable} validity={feedback.validity} dx={feedback.dx} dy={feedback.dy}")
                 self._retry_operation_feedback(now, "Camera match is invalid or uncertain")
             return None
         if now - feedback.received_at > self.context.max_feedback_age_s:
@@ -602,37 +565,31 @@ class MotionController:
                     self.message = "Camera feedback recovered; continuing current move"
                 self._feedback_retry_started_at = None
             return
+        if self.state.busy:
+            self.cancel("Joystick output became busy while waiting for camera feedback")
+            return
         feedback = self._consume_operation_feedback(now)
         if feedback is None or not self._operation:
             return
         if self._operation == "calibration":
             if self._stage == "baseline":
-                self._calibration_start = feedback.dx, self.state.position
+                self._calibration_start_dx = feedback.dx
+            if self._presses_sent < abs(self._calibration_presses):
+                direction = Direction.RIGHT if self._calibration_presses > 0 else Direction.LEFT
+                self._presses_sent += 1
                 self._stage = "moving"
-                self.message = "Calibration test move in progress"
-                self._start_move(self._calibration_steps, now, "calibration")
-            elif self._stage == "postmove":
-                dx0, position0 = self._calibration_start
-                delta_steps = self._calibration_end_position - position0
-                delta_pixels = feedback.dx - dx0
-                if delta_steps == 0 or abs(delta_pixels) < 2:
-                    self.cancel("Calibration needs actual motor movement and at least 2 pixels of observed X movement")
+                self.message = f"Calibration press {self._presses_sent}/{abs(self._calibration_presses)}"
+                self._press(direction, now, "calibration")
+            else:
+                delta_pixels = feedback.dx - self._calibration_start_dx
+                if not math.isfinite(delta_pixels) or abs(delta_pixels) < 2:
+                    self.cancel("Calibration needs at least 2 pixels of observed X movement")
                     return
-                scale = delta_pixels / delta_steps
-                if not math.isfinite(scale) or scale == 0:
-                    self.cancel("Pixel calibration did not produce a finite nonzero scale")
-                    return
-                candidate = replace(self.config, pixels_per_step=scale,
-                                    calibration_source_id=self.context.source_id, calibration_shape=self.context.shape)
-                # Show the calibrated nudge in pixels, preserving its selected
-                # motor distance through the unit change.
-                candidate = replace(candidate, jog_unit="pixels",
-                                    jog_distance=self.config.distance_steps() * abs(scale))
-                self.config = candidate.validated()
+                scale = delta_pixels / self._calibration_presses
+                self.config = self.config.with_press_scale(scale, self.context)
                 self._operation = None
                 self.phase = "ready"
-                self.message = (f"Pixel calibration saved: {self.config.jog_distance:.6g} px/nudge "
-                                f"({scale:+.6g} px/driver step)")
+                self.message = f"Pixel calibration saved: {scale:+.6g} px/right press"
             return
         error = abs(feedback.dx)
         if error <= self.context.tolerance_px:
@@ -646,53 +603,27 @@ class MotionController:
             self.message = f"Confirming X alignment ({self._confirmations}/3)"
             if self._confirmations >= 3:
                 self._operation = None
-                self._direct_alignment = None
+                self._alignment_search = None
                 self.phase = "ready"
-                self.message = "X aligned · Y is unchanged by this axis"
+                self.message = "X aligned"
             return
         self._confirmations = 0
-        if self._operation == "align_direct":
-            self._process_direct_alignment(feedback, now)
-            return
-        if self._previous_error is not None:
-            allowance = max(1.0, self.context.tolerance_px * .1)
-            if error > self._previous_error + allowance:
-                self.cancel("X error increased; check motor direction and pixel calibration")
-                return
-            self._no_progress = self._no_progress + 1 if self._previous_error - error < max(.05, self.context.tolerance_px * .1) else 0
-            if self._no_progress >= 5:
-                self.cancel("X alignment stopped after 5 moves without progress")
-                return
         if self._corrections >= self.MAX_CORRECTIONS:
             self.cancel("X alignment reached its 100 correction limit")
             return
-        limit = self.config.distance_steps()
-        steps = round(-feedback.dx / self.config.pixels_per_step)
-        steps = max(-limit, min(limit, steps))
-        if steps == 0:
-            self.cancel("Requested X tolerance is smaller than one driver step can resolve")
-            return
-        self._previous_error = error
-        self._corrections += 1
-        self._stage = "moving"
-        quality = " · uncertain match at large offset" if not feedback.usable else ""
-        self.message = f"Aligning X · correction {self._corrections}{quality}"
-        self._start_move(steps, now, "align")
-
-    def _process_direct_alignment(self, feedback, now):
-        if self._corrections >= self.MAX_CORRECTIONS:
-            self.cancel("Direct X alignment reached its 100 correction limit")
-            return
         try:
-            steps = self._direct_alignment.next_steps(self.state.position, feedback.dx)
+            direction = self._alignment_search.next_direction(feedback.dx)
         except ValueError as exc:
             self.cancel(str(exc))
             return
         self._corrections += 1
         self._stage = "moving"
         quality = " · uncertain match at large offset" if not feedback.usable else ""
-        self.message = f"Aligning X directly · correction {self._corrections} ({steps:+d} steps){quality}"
-        self._start_move(steps, now, "align")
+        label = "Aligning X"
+        if self._alignment_search.crossed_target:
+            label = "Crossed X target · reversing"
+        self.message = f"{label} · correction {self._corrections} ({direction.name.lower()}){quality}"
+        self._press(direction, now, "align")
 
     def _read_reference_input(self, now: float) -> None:
         channel = self.config.reference_channel
@@ -718,12 +649,9 @@ class MotionController:
         # an operation after completion, Stop, or a failed readiness check.
         self._align_level = level
         if rising and not (self._operation or self._pending_operation or self._move or self._stopping):
-            if self.config.pixels_per_step is None:
-                self.request_calibration(self.config.calibration_steps)
-            else:
-                self.request_align()
+            self.request_align()
 
-    def tick(self, now: float, hardware_state: HardwareState | None = None,
+    def tick(self, now: float, hardware_state: JoystickState | None = None,
              inputs: tuple[bool, bool, bool, bool] | None = None,
              feedback: MotionFeedback | None = None) -> tuple[MotionAction, ...]:
         if hardware_state is not None:
@@ -739,7 +667,7 @@ class MotionController:
                 # Release each contact immediately, then require the complete
                 # debounce interval for a subsequent activation, including a
                 # bounce back to its former level.
-                if raw != self.config.active_high or now - self._input_since[channel] >= self.INPUT_DEBOUNCE_S:
+                if raw != self.config.active_high or now - self._input_since[channel] >= INPUT_DEBOUNCE_S:
                     debounced[channel] = raw
             self._candidate_inputs = self.inputs4
             self._debounced = tuple(debounced)
@@ -750,11 +678,7 @@ class MotionController:
             self._read_reference_input(now)
             self._read_align_input()
         if self.state.fault and (self.armed or self._move or self._operation):
-            self.cancel(f"Motor fault: {self.state.fault}", disarm=True)
-        if self.setup_applied and self.state.step_resolution != self.config.step_resolution:
-            self.config = self._without_scales(self.config)
-            self.setup_applied = False
-            self.cancel("Device microstep resolution changed; reapply setup and recalibrate", disarm=True)
+            self.cancel(f"Motion fault: {self.state.fault}", disarm=True)
         left, right = self._logical_inputs()
         # Raw conflicting contacts stop immediately; debounce only delays starts.
         raw_left, raw_right = self._logical_inputs(raw=True)
@@ -768,7 +692,7 @@ class MotionController:
             self.cancel("Manual input cancelled camera-feedback motion; release both controls", disarm=False)
         self._manual_activity = False
         if self._stopping:
-            if self.state.velocity == 0 and self.state.remaining == 0:
+            if not self.state.busy:
                 self._move = None
                 self._stopping = False
                 self._actions.append(MotionAction("disable"))
@@ -777,22 +701,21 @@ class MotionController:
                 actions, self._actions = tuple(self._actions), []
                 return actions
         if self._move:
-            purpose, start_position, steps, started, timeout = self._move
+            purpose, started, timeout = self._move
             if now - started > timeout:
-                self.cancel("Motor move timed out", disarm=True)
-            elif now > started and self.state.velocity == 0 and self.state.remaining == 0:
+                self.cancel("Joystick nudge timed out", disarm=True)
+            elif now > started and not self.state.busy:
                 self._move = None
                 if purpose == "jog":
                     self.phase = "ready"
                 elif self._operation:
-                    self._calibration_end_position = self.state.position
                     self._stage = "postmove"
-                    self.message = "Waiting for a fresh camera frame after motor stop"
+                    self.message = "Waiting for a fresh camera frame after the nudge"
                     self._freshness(now)
         if self._pending_operation:
-            kind, steps = self._pending_operation
+            kind, presses = self._pending_operation
             self._pending_operation = None
-            self._start_operation(kind, steps, now)
+            self._start_operation(kind, presses, now)
         self._process_operation(now)
         if not raw_left and not raw_right:
             self._neutral_required = False
@@ -805,23 +728,24 @@ class MotionController:
                 not self._stopping and direction):
             if direction != self._direction:
                 self._next_nudge_at = now
-            if self._move is None and now >= self._next_nudge_at:
-                sign = -direction if self.config.invert_direction else direction
-                self._start_move(sign * self.config.distance_steps(), now, "jog")
-                self._next_nudge_at = now + 1 / self.config.repeat_hz
+            if self._move is None and not self.state.busy and now >= self._next_nudge_at:
+                self._press(Direction(direction), now, "jog")
                 self.message = "Nudging left" if direction < 0 else "Nudging right"
         self._direction = direction
         actions, self._actions = tuple(self._actions), []
         return actions
 
     def snapshot(self) -> MotionStatus:
-        return MotionStatus(self.connected, self.setup_applied, self.armed, self.phase, self.message,
-                            self.inputs4, self.state.position, self.state.velocity, self.state.remaining,
-                            self.state.motor_current_ma, self.state.step_resolution, self.state.interpolation,
-                            self.config.pixels_per_step, self.config.calibration_source_id,
-                            self.config.calibration_shape, self._corrections,
-                            self._feedback.dx if self._feedback and math.isfinite(self._feedback.dx) else None,
-                            self.config, self.config_revision, self.reference_capture, self.connection_revision)
+        feedback = self._feedback
+        return MotionStatus(
+            connected=self.connected, setup_applied=self.setup_applied, armed=self.armed,
+            phase=self.phase, message=self.message, inputs4=self.inputs4,
+            corrections=self._corrections,
+            dx=feedback.dx if feedback and math.isfinite(feedback.dx) else None,
+            config=self.config, config_revision=self.config_revision,
+            reference_capture=self.reference_capture, connection_revision=self.connection_revision,
+            busy=self.state.busy,
+        )
 
 
 class MotionWorker(threading.Thread):
@@ -829,10 +753,21 @@ class MotionWorker(threading.Thread):
 
     def __init__(self, config: MotionConfig | None = None, hardware=None,
                  freshness_callback: Callable[[float], int] | None = None,
-                 calibration_worker: MeasurementWorker | None = None):
+                 calibration_worker: MeasurementWorker | None = None, *,
+                 joystick: JoystickPort | None = None):
         super().__init__(name="single-axis-motion", daemon=True)
         self.controller = MotionController(config)
-        self.hardware = hardware if hardware is not None else TinkerforgeMotionHardware()
+        if joystick is not None and hardware is not None:
+            raise ValueError("Choose either a joystick port or relay hardware")
+        self.wired_joystick = None
+        if joystick is None:
+            hardware = hardware if hardware is not None else TinkerforgeMotionHardware()
+            self.wired_joystick = WiredJoystick(hardware, lambda: self.controller.config,
+                                               stop_requested=self._movement_stop_requested)
+            joystick = self.wired_joystick
+        self.joystick = joystick
+        # Older injected joystick ports called their one-nudge command pulse.
+        self._nudge = joystick.nudge if hasattr(joystick, "nudge") else joystick.pulse
         self.freshness_callback = freshness_callback
         self.calibration_worker = calibration_worker
         self._calibration_request: tuple[float, int] | None = None
@@ -923,31 +858,35 @@ class MotionWorker(threading.Thread):
             self._commands.append(("stop", None))
     def align(self): self._enqueue("align")
     def align_direct(self): self._enqueue("align_direct")
-    def calibrate(self, steps: int):
-        if type(steps) is not int or steps == 0 or abs(steps) > 2_147_483_647:
-            raise ValueError("Calibration needs a nonzero signed number of driver steps")
-        self._enqueue("calibrate", steps)
+    def calibrate(self, presses: int):
+        if type(presses) is not int or not 1 <= abs(presses) <= 1_000_000:
+            raise ValueError("Calibration needs a nonzero signed number of joystick presses (±1000000)")
+        self._enqueue("calibrate", presses)
     def stop_worker(self):
         self._stop_requested.set()
         self.stopping.set()
 
+    def _movement_stop_requested(self):
+        return self._stop_requested.is_set() or self.stopping.is_set()
+
     def _execute(self, action):
-        if action.kind in {"move", "enable", "freshness"} and (self._stop_requested.is_set() or self.stopping.is_set()):
+        if action.kind in {"pulse", "enable", "freshness"} and self._movement_stop_requested():
             self.controller.cancel("Motion stopped; release both directions before the next press", disarm=False)
             return
-        if action.kind == "move":
-            self.hardware.enable()
-            if self._stop_requested.is_set() or self.stopping.is_set():
-                self.controller.cancel("Motion stopped; release both directions before the next press", disarm=False)
-                self.hardware.stop()
-                return
-            self.hardware.move_steps(action.steps, action.velocity)
+        if action.kind == "pulse":
+            if self.wired_joystick is None:
+                # An injected port may have disabled its contacts after a Stop.
+                self.joystick.enable()
+                if self._movement_stop_requested():
+                    self.joystick.stop()
+                    return
+            self._nudge(action.direction)
         elif action.kind == "stop":
-            self.hardware.stop()
+            self.joystick.stop()
         elif action.kind == "disable":
-            self.hardware.disable()
+            self.joystick.disable()
         elif action.kind == "enable":
-            self.hardware.enable()
+            self.joystick.enable()
         elif action.kind == "freshness":
             if self.freshness_callback is None:
                 self.controller.cancel("A live camera freshness barrier is required")
@@ -964,9 +903,9 @@ class MotionWorker(threading.Thread):
         if name == "configure":
             config, revision = value
             connection_changed = any(getattr(config, key) != getattr(controller.config, key) for key in
-                                     ("host", "port", "stepper_uid", "digital_uid"))
+                                     ("host", "port", "digital_uid", "output_uid", "axis_mode", "stepper_uid"))
             if connection_changed and controller.connected:
-                self.hardware.shutdown()
+                self.joystick.shutdown()
                 controller.on_disconnected("Motion connection settings changed; reconnect")
             controller.configure(config, revision)
         elif name == "connect":
@@ -974,9 +913,8 @@ class MotionWorker(threading.Thread):
             if controller.connected:
                 controller.message = "Motion hardware is already connected"
                 return
-            config = controller.config
-            self.hardware.connect(config.host, config.port, config.stepper_uid, config.digital_uid)
-            controller.on_connected(self.hardware.read_state())
+            self.joystick.connect()
+            controller.on_connected(self.joystick.read_state())
             # Prepare the axis for use after either startup or a manual connection.
             # Require neutral once so controls held during connection cannot
             # start a move or replay a tap received while hardware was opening.
@@ -985,23 +923,20 @@ class MotionWorker(threading.Thread):
         elif name == "disconnect":
             controller.connection_revision = value
             if controller.connected:
-                self.hardware.shutdown()
+                self.joystick.shutdown()
             controller.on_disconnected()
         elif name == "setup":
             if not controller.connected:
-                controller.message = "Connect motion hardware before applying motor setup"
+                controller.message = "Connect motion hardware before preparing joystick outputs"
             else:
-                controller.cancel("Applying motor setup", disarm=True)
-                controller.state = self.hardware.read_state()
-                if controller.state.velocity or controller.state.remaining:
-                    controller.message = "Stop the motor before applying setup"
-                elif controller.config.motor_current_ma is None:
-                    controller.message = "Enter the motor's permitted current before applying setup"
+                controller.cancel("Preparing joystick outputs", disarm=True)
+                controller.state = self.joystick.read_state()
+                if controller.state.busy:
+                    controller.message = "Wait for the joystick outputs to release"
                 else:
-                    config = controller.config
-                    self.hardware.stop()
-                    self.hardware.disable()
-                    self.hardware.configure(config.motor_current_ma, config.step_resolution, config.interpolation)
+                    self.joystick.stop()
+                    self.joystick.disable()
+                    self.joystick.setup()
                     controller.on_setup_applied()
         elif name == "arm":
             if controller.connected:
@@ -1009,8 +944,8 @@ class MotionWorker(threading.Thread):
                     self._command("setup", None)
                     if not controller.setup_applied:
                         return
-                controller.state = self.hardware.read_state()
-                controller.inputs4 = self.hardware.read_inputs()
+                controller.state = self.joystick.read_state()
+                controller.inputs4 = self.joystick.read_inputs()
             controller.arm(wait_for_neutral=bool(value))
         elif name == "stop":
             controller.cancel("Motion stopped; release both directions before the next press", disarm=False)
@@ -1034,8 +969,8 @@ class MotionWorker(threading.Thread):
                         self._command(name, value)
                     self._sync_feedback(feedback)
                     if self.controller.connected:
-                        state = self.hardware.read_state()
-                        inputs = self.hardware.read_inputs()
+                        state = self.joystick.read_state()
+                        inputs = self.joystick.read_inputs()
                         # SDK reads can take a network timeout. Observe key
                         # releases and Stop requests received during that wait
                         # before scheduling another finite move.
@@ -1051,21 +986,24 @@ class MotionWorker(threading.Thread):
                 except Exception as exc:
                     shutdown_error = None
                     try:
-                        self.hardware.shutdown()
+                        self.joystick.shutdown()
                     except Exception as shutdown_exc:
                         shutdown_error = shutdown_exc
                     detail = f"Motion error: {exc}"
                     if shutdown_error is not None:
-                        detail += f"; motor shutdown incomplete: {shutdown_error}"
+                        detail += f"; hardware shutdown incomplete: {shutdown_error}"
                     self.controller.on_disconnected(detail)
-                self.output.publish(self.controller.snapshot())
+                status = self.controller.snapshot()
+                if self.wired_joystick and status.connected:
+                    status = replace(status, inputs4=self.wired_joystick.raw_inputs)
+                self.output.publish(status)
                 self.stopping.wait(.02)
         finally:
             if self._calibration_request is not None:
                 self.calibration_worker.stop_calibration()
             try:
-                self.hardware.shutdown()
+                self.joystick.shutdown()
                 self.controller.on_disconnected()
             except Exception as exc:
-                self.controller.on_disconnected(f"Motor shutdown incomplete: {exc}")
+                self.controller.on_disconnected(f"Hardware shutdown incomplete: {exc}")
             self.output.publish(self.controller.snapshot())

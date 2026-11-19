@@ -4,16 +4,18 @@ import math
 
 import pytest
 
+from measure_shift.joystick import Direction, JoystickState
 from measure_shift.motion import MotionConfig
 from test_motion import CONTEXT, feedback, moves, ready, state
 
 
 class DirectAxis:
-    def __init__(self, *, error=40, gain=1, limit=32, slack=0, config=None):
-        self.controller = ready(config or MotionConfig(jog_distance=limit))
+    def __init__(self, *, error=40, gain=1, nudge=4, slack=0, config=None, direct=True):
+        self.controller = ready(config or MotionConfig())
         self.original_config = self.controller.config
         self.error = error
         self.gain = gain
+        self.nudge = nudge
         self.slack = slack
         self.remaining_slack = slack
         self.direction = 0
@@ -24,8 +26,11 @@ class DirectAxis:
         self.frame = 0
         self.steps = []
         self.pending = None
-        self.controller.request_align_direct()
-        self.actions(self.controller.tick(self.now, state(self.position)))
+        if direct:
+            self.controller.request_align_direct()
+        else:
+            self.controller.request_align()
+        self.actions(self.controller.tick(self.now, JoystickState()))
 
     def actions(self, actions):
         for action in actions:
@@ -33,11 +38,10 @@ class DirectAxis:
                 self.generation += 1
                 self.cutoff = action.after
                 self.controller.acknowledge_freshness(self.generation)
-            elif action.kind == "move":
+            elif action.kind == "pulse":
                 assert self.pending is None
                 self.pending = action
-                self.steps.append(action.steps)
-                assert action.velocity == self.controller.config.motor_speed
+                self.steps.append(-action.direction * self.nudge)
         return actions
 
     def sample(self, dx=None, **kwargs):
@@ -45,11 +49,11 @@ class DirectAxis:
         self.frame += 1
         kwargs.setdefault("generation", self.generation)
         value = feedback(self.frame, self.error if dx is None else dx, self.now, **kwargs)
-        return self.actions(self.controller.tick(self.now, state(self.position), feedback=value))
+        return self.actions(self.controller.tick(self.now, JoystickState(), feedback=value))
 
     def finish(self, actual=None):
         assert self.pending is not None
-        steps = self.pending.steps if actual is None else actual
+        steps = self.steps[-1] if actual is None else actual
         self.position = (self.position + steps + 2**31) % 2**32 - 2**31
         direction = 1 if steps > 0 else -1
         if direction != self.direction:
@@ -60,7 +64,7 @@ class DirectAxis:
         self.error += direction * (abs(steps) - dead_travel) * self.gain
         self.pending = None
         self.now += .02
-        return self.actions(self.controller.tick(self.now, state(self.position)))
+        return self.actions(self.controller.tick(self.now, JoystickState()))
 
     def run(self):
         for _ in range(150):
@@ -72,41 +76,104 @@ class DirectAxis:
         pytest.fail("Direct alignment did not finish within the simulation bound")
 
 
-@pytest.mark.parametrize("gain", [.2, -.2, 1, -1, 2.5, -2.5])
+@pytest.mark.parametrize("gain", [.25, -.25, 1, -1, 2.5, -2.5])
 @pytest.mark.parametrize("error", [40, -40])
 @pytest.mark.parametrize("slack", [0, 3, 7])
 def test_direct_alignment_converges_without_calibration_despite_slack(gain, error, slack):
-    axis = DirectAxis(error=error, gain=gain, slack=slack)
+    # Whole-nudge backlash leaves these targets reachable on the discrete axis.
+    axis = DirectAxis(error=error, gain=gain, slack=slack * 4, nudge=4)
     axis.run()
     assert "X aligned" in axis.controller.message
     assert abs(axis.error) <= CONTEXT.tolerance_px
-    assert axis.steps[0] == 4
-    assert all(1 <= abs(steps) <= 32 for steps in axis.steps)
+    assert axis.steps[0] == -4
+    assert {abs(steps) for steps in axis.steps} == {4}
     assert axis.controller.config == axis.original_config
-    assert axis.controller.config.pixels_per_step is None
+    assert axis.controller.config.pixels_per_right_press is None
 
 
-def test_default_nudge_still_starts_with_four_steps_and_preserves_settings():
-    axis = DirectAxis(config=MotionConfig(), slack=3, error=-20)
+def test_default_nudge_probes_right_and_preserves_settings():
+    axis = DirectAxis(config=MotionConfig(), nudge=1, slack=3, error=-20)
     axis.run()
     assert "X aligned" in axis.controller.message
-    assert axis.steps[0] == 4
-    assert max(map(abs, axis.steps)) == 4
+    assert axis.steps[0] == -1
+    assert set(map(abs, axis.steps)) == {1}
     assert axis.controller.config == MotionConfig()
 
 
-def test_growth_takes_up_slack_and_refinement_shrinks_after_crossing():
-    axis = DirectAxis(error=-40, slack=6)
+def test_wrong_initial_direction_reverses_after_camera_reports_larger_error():
+    axis = DirectAxis(error=-40)
+    axis.sample()
+    assert axis.pending.direction == Direction.RIGHT
+    axis.finish()
+    axis.sample()
+    assert axis.pending.direction == Direction.LEFT
+
+
+def test_same_side_error_increase_reverses_after_an_improving_nudge():
+    axis = DirectAxis(error=12)
+    axis.sample()
+    axis.finish()
+    axis.sample()
+    assert axis.pending.direction == Direction.RIGHT
+    axis.finish(actual=2)
+    axis.sample()
+    assert axis.pending.direction == Direction.LEFT
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("residual", [3, 14])
+def test_settled_crossing_reverses_one_press_and_can_converge(direct, sign, residual):
+    # 8 px before the first press, then either a larger error or less
+    # than half a calibrated nudge on the opposite side of the reference.
+    config = MotionConfig(pixels_per_right_press=None if direct else sign,
+                          calibration_source_id=CONTEXT.source_id, calibration_shape=CONTEXT.shape)
+    axis = DirectAxis(error=8 * sign, gain=sign, config=config, nudge=10, direct=direct)
+    axis.sample()
+    assert axis.pending.direction == Direction.RIGHT
+    axis.finish(actual=-(8 + residual))
+    assert axis.error == -residual * sign
+    axis.sample(generation=axis.generation - 1)
+    assert axis.pending is None
+    axis.sample()
+    assert axis.pending.direction == Direction.LEFT and "reversing" in axis.controller.message
+    axis.finish(actual=residual)
     axis.run()
-    assert axis.steps[:4] == [4, 8, 16, 32]
-    assert any(steps < 0 for steps in axis.steps)
-    assert max(map(abs, axis.steps[4:])) < 32
-    assert "X aligned" in axis.controller.message
+    assert axis.steps == [-10, 10] and "X aligned" in axis.controller.message
+    assert axis.controller.config == config
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("travels", [
+    (-20, 15, -5, 2),   # Both endpoints approach zero.
+    (-28, 10, 18, -8),  # Revisits +8 from -10 after first crossing from +8 to -20.
+])
+def test_changing_overshoot_endpoints_can_reverse_in_both_directions(direct, travels):
+    config = MotionConfig(pixels_per_right_press=None if direct else 1,
+                          calibration_source_id=CONTEXT.source_id, calibration_shape=CONTEXT.shape)
+    axis = DirectAxis(error=8, config=config, nudge=10, direct=direct)
+    for travel in travels:
+        axis.sample()
+        assert axis.pending.direction == (Direction.RIGHT if travel < 0 else Direction.LEFT)
+        axis.finish(actual=travel)
+    axis.run()
+    assert "X aligned" in axis.controller.message and len(axis.steps) == len(travels)
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_repeated_unreachable_endpoints_stop_at_the_closer_endpoint(direct):
+    config = MotionConfig(pixels_per_right_press=None if direct else 1,
+                          calibration_source_id=CONTEXT.source_id, calibration_shape=CONTEXT.shape)
+    axis = DirectAxis(error=8, config=config, nudge=10, direct=direct)
+    axis.run()
+    assert "one joystick nudge" in axis.controller.message
+    assert axis.controller.armed and axis.error == -2
+    assert axis.steps == [-10, 10, -10]
 
 
 def test_saved_pixel_scale_does_not_control_direct_direction_or_correction():
-    config = MotionConfig(pixels_per_step=-100, calibration_source_id=CONTEXT.source_id,
-                          calibration_shape=CONTEXT.shape, jog_distance=32)
+    config = MotionConfig(pixels_per_right_press=-100, calibration_source_id=CONTEXT.source_id,
+                          calibration_shape=CONTEXT.shape)
     axis = DirectAxis(config=config, gain=1, error=40)
     axis.run()
     assert "X aligned" in axis.controller.message
@@ -117,20 +184,13 @@ def test_partial_driver_moves_and_position_wrap_do_not_break_feedback_search():
     axis = DirectAxis(error=-40)
     axis.position = 2**31 - 2
     axis.sample()
-    assert axis.steps == [4]
-    axis.finish(actual=2)
+    assert axis.steps == [-4]
+    axis.finish(actual=-3)
     axis.run()
     assert "X aligned" in axis.controller.message
 
 
-def test_zero_motor_travel_and_unresponsive_image_stop_without_disarming():
-    axis = DirectAxis()
-    axis.sample()
-    axis.finish(actual=0)
-    axis.sample()
-    assert "motor position did not change" in axis.controller.message
-    assert axis.controller._operation is None and axis.controller.armed
-
+def test_unresponsive_image_stops_without_disarming():
     axis = DirectAxis(gain=0)
     axis.run()
     assert "without progress" in axis.controller.message
@@ -138,10 +198,10 @@ def test_zero_motor_travel_and_unresponsive_image_stop_without_disarming():
 
 
 def test_unresolvable_tolerance_stops_instead_of_oscillating():
-    axis = DirectAxis(error=4.5)
+    axis = DirectAxis(error=4.5, nudge=1)
     axis.controller.context = replace(CONTEXT, tolerance_px=.1)
     axis.run()
-    assert "one driver step" in axis.controller.message
+    assert "one joystick nudge" in axis.controller.message
     assert axis.controller._operation is None
 
 
@@ -177,7 +237,7 @@ def test_bad_feedback_never_starts_a_direct_move(problem):
     axis.sample(math.nan if problem == "nonfinite" else 5, **kwargs)
     assert axis.steps == []
     axis.sample()
-    assert axis.steps == [4]
+    assert axis.steps == [-4]
 
 
 @pytest.mark.parametrize("interruption", ["stop", "manual", "context", "fault", "time", "corrections"])

@@ -7,8 +7,8 @@ correlation, with optional image analytics. The notebooks and sample images
 remain available.
 
 For everyday operation, see the [German user manual (PDF)](docs/benutzerhandbuch-de.pdf).
-It assumes a configured camera, motor axis, and joystick; reference capture,
-calibration, nudging, and X alignment are operated from the joystick.
+It assumes a configured camera and axis controller. Relay contacts request
+axis nudges, and digital inputs can trigger reference capture and X alignment.
 Edit the [LaTeX source](docs/benutzerhandbuch-de.tex), or use the
 [complete LaTeX source archive](docs/benutzerhandbuch-de-latex.zip).
 With pdfLaTeX installed, rebuild the PDF and archive using
@@ -91,7 +91,8 @@ bash scripts/build_linux.sh
 ./dist/measure-shift/measure-shift --demo
 ```
 
-The script creates a separate system-Python environment in `build/linux-venv`,
+The build machine needs Brick Daemon at `/usr/bin/brickd`. The script creates
+a separate system-Python environment in `build/linux-venv`,
 installs the app with camera and motion bindings plus PyInstaller, and bundles
 the dynamically imported hardware modules. Set `MEASURE_SHIFT_BUILD_PYTHON` to
 another Python executable if needed. The build does not use the existing
@@ -103,8 +104,13 @@ dependencies have not changed.
 
 Copy the entire `dist/measure-shift/` directory, or extract the generated
 `dist/measure-shift-linux-<architecture>.tar.gz` archive on the target computer.
-The bundle includes Python and the app's Python dependencies; camera drivers
-and manufacturer runtimes still need to be installed on the target computer.
+The bundle includes Python, the app's Python dependencies, and Brick Daemon.
+Running `measure-shift` starts the bundled daemon on `localhost:4223` if the
+local port is free and stops that subprocess on normal exit. The target needs
+`libusb-1.0-0` on Debian or Ubuntu and the desktop user's account needs read and
+write access to the Tinkerforge USB device. Camera drivers and manufacturer
+runtimes still need to be installed on the target computer. Brick Daemon source
+is available from [Tinkerforge](https://github.com/Tinkerforge/brickd).
 The resolved build dependencies are recorded in the bundle's
 `build-requirements.txt`.
 
@@ -246,7 +252,7 @@ modest refresh rate while aligning.
   most recent **10,000 measurements**; export during long sessions if earlier
   measurements are needed.
 - **Automatic settings:** edits are saved automatically and restored on startup,
-  including motor current and speed, joystick channels and polarity, nudge distance,
+  including relay timing and digital input channels and polarity,
   calibration, matching settings, tolerance, camera settings, source selection,
   and panel visibility. On Linux the file is
   `$XDG_CONFIG_HOME/measure-shift/settings.json`, or
@@ -314,7 +320,7 @@ pixel clock, frame rate, and exposure changes with actual camera readback and
 continued acquisition. Sustained acquisition and Basler hardware still need validation.
 Rotation/scale compensation remains outside this version.
 
-## Linear axis: joystick, keyboard, and Align X
+## Linear axis
 
 Install the optional motion bindings in the same environment as the app:
 
@@ -322,215 +328,71 @@ Install the optional motion bindings in the same environment as the app:
 .venv/bin/python -m pip install -c requirements-lock.txt -e '.[motion]'
 ```
 
-The [wiring diagram (SVG)](docs/wiring-diagram.svg) shows the computer, camera,
-Tinkerforge host, motor power and windings, joystick inputs, and an optional
-reference-capture button. It is also available as a
-[printable A3 PDF](docs/wiring-diagram.pdf) and [PNG](docs/wiring-diagram.png).
-The drawing follows the code's default channel assignments. The USB host,
-normally open joystick contacts, and separate 5 V control supply are labeled
-examples; confirm the actual board versions, motor leads, and supply ratings
-before wiring.
+Choose the **Axis mode** in **Tools → Linear Axis** with hardware disconnected.
+**External machine** sends one relay press per nudge. The receiving joystick
+controller determines the travel and speed. Profiles without an axis mode use
+this setting.
 
-The top controls use one toolbar with separators between acquisition, reference
-capture, and axis controls. **Connect hardware**, **Run pixel calibration**, **Align X**,
-and **STOP** stay visible. Pixel calibration uses the standard button style;
-**Align X** is green and **STOP** is red. The **Tools** drop-down opens camera discovery, source disconnect,
-reference loading, pause/resume, snapshots, analytics, and axis settings when needed.
-Axis status appears in the single-line bottom performance bar, with reserved
-space for each metric so changing digits do not shift the layout. Hover over the
-axis status to read the full message when space is limited.
-Calibration move distance and pixel scale appear in **Linear Axis → Pixel calibration**.
-Basic operation does not require opening the settings panel. Use **Tools → Linear Axis**
-or **View → Linear Axis** to adjust connection, wiring, motor, and nudge settings.
-The defaults are Brick
-Daemon at `localhost:4223`, Silent Stepper Bricklet 2.0 UID **2eoQ**, and Industrial
-Digital In 4 UID **27s4**. Both generations of Digital In 4 are supported. The app
-connects automatically at startup, applies the selected motor settings,
-and enables the motor. **Connect hardware** is a toggle: checked means connected;
-switch it off to stop, disable, and disconnect the axis, or on to reconnect.
-If hardware is unavailable, the toggle returns to off and the axis status shows
-the connection error. Camera-only and Demo use do not require Tinkerforge bindings.
+**Silent Stepper bench** pairs each relay press with one fixed movement on the
+bench stepper (default UID `2eoQ`). One nudge is eight 1/8 microsteps, at
+200 microsteps/s and 800 mA. Left is positive and right is negative. The app
+waits for both the motor movement and relay release before requesting settled
+camera feedback. Reconnect hardware after selecting the mode.
 
-1. Startup connects hardware automatically. This applies the restored settings and enables
-   movement without starting a move; no separate setup or enable click is needed.
-   If a direction is held during connection, release all directions before
-   pressing again. Motor current defaults to **800 mA** for
-   this axis; you can edit it within the motor's rating and the driver's
-   360–1640 mA range. **Apply motor setup** applies settings while leaving
-   movement disabled. Driver steps refer to the selected microstep size, not
-   necessarily full motor steps.
-2. Channel **2** means **left / forward** (positive driver steps) and channel **1**
-   means **right / backward** (negative driver steps). The last input, channel **3**,
-   starts **Align X**; channel **0** is available for reference capture.
-   Watch all four **Raw inputs** while testing your joystick, then
-   set left, right, reference capture, and Align X together under **Linear Axis →
-   Digital inputs**. Click **Apply digital inputs** to apply the complete mapping,
-   joystick polarity, and direction together. Selections stay pending until applied,
-   so you can swap channels without changing live wiring one selection at a time.
-   **Joystick active high** sets joystick polarity; **Invert motor direction** swaps
-   which motor direction means right. Each action must use a separate input.
-   Both reference capture and Align X can be disabled. Older profiles that
-   assigned reference capture to a joystick input keep their joystick mapping
-   and motor settings, with reference capture disabled until reassigned.
-3. Set **Distance / nudge** and **Repeat frequency**. The defaults
-   are **1 driver step** and **2 Hz**. Motor speed defaults to **200 driver steps/s**;
-   adjust it under **Motor setup → Advanced motor settings** if needed.
-   A press performs one
-   nudge when sampled; holding repeats at the selected frequency. Releasing finishes
-   the current nudge. Inputs are not buffered: presses released before the axis is
-   ready are discarded. Each move waits for the previous move to finish, and repeats
-   never accumulate.
-   **STOP** interrupts movement. Nudges have no acceleration/deceleration ramp.
-   Single-step nudges also handle firmware that leaves a nonzero remaining-step
-   count after completion: the app verifies the target position and zero velocity,
-   requests Stop to clear that state, and verifies fresh telemetry before repeating.
-4. Keyboard **Left/Right arrows** behave like the joystick while the main window
-   is active. Arrows retain their ordinary behavior in settings fields, menus,
-   and dialogs. Leaving the window clears held keys. Keyboard and joystick
-   requests in the same direction share one repeat stream; conflicting directions
-   stop movement and require both to return to neutral. After Stop or reconnect,
-   return to neutral before pressing again.
+In **Tools → Linear Axis**, set
+the Brick Daemon host and port, Dual Relay UID and optional Digital In UID.
+Defaults are `localhost:4223`, relay **2j7T**, and Digital In **27s4**. The
+app connects at startup and waits for the controls to be released. Use
+**Connect hardware** to disconnect or retry. Loading a settings profile
+disconnects hardware until you reconnect.
 
-Under **Digital inputs**, set **Reference capture** to an available channel
-(or **Disabled**, the default), then click **Apply digital inputs**. With hardware connected, a raw
-**LOW → HIGH** transition captures the current reference, with at least **one
-second** between digital captures. Holding HIGH does not repeat; edges during
-the cooldown are discarded. Connecting or selecting an already-HIGH input does
-not capture: the input must first be observed LOW. This trigger is independent
-of joystick **Active high** polarity and motor enable state. It uses the same
-capture behavior as **Capture reference**, including the displayed image while
-the view is paused. The channel selection is saved with settings. Inputs are
-sampled by the motion worker, so pulses shorter than its polling interval can
-be missed.
+| Default direction | Dual Relay contact | Digital In |
+| --- | --- | --- |
+| Right | A0 | 1 |
+| Left | A1 | 2 |
 
-The repeat frequency controls how often a nudge starts; the advanced motor speed
-controls how fast each nudge travels, always in driver steps/s regardless of the
-nudge units. For example, **20 steps/nudge** at the default **200 steps/s** takes
-roughly 0.1 seconds, repeated at most every 0.5 seconds with **2 Hz** while held.
-A move longer than the repeat interval finishes before another starts.
-Changes apply to subsequent nudges. Settings profiles retain these controls,
-wiring, and calibration, but loading a profile disconnects motion hardware and
-never activates it.
+The physical joystick, arrow keys, **Align X**, and **Run pixel calibration** send the same relay
+nudge. The relay releases on its own timer. Set **Joystick press** (default
+80 ms) and **Release interval** (default 100 ms) to suit the receiving
+controller, allowing it to finish the nudge before the next press. **Nudge
+repeat rate** caps how often the app sends pulses (default 2 Hz). Hold the
+joystick left or right, or hold an arrow key in the active main window, to repeat.
+Moving the joystick during automatic alignment cancels the operation. The app filters its relay echoes so a nudge
+cannot trigger a second pulse. **STOP** releases the relays and ends the
+alignment attempt. The receiving controller handles movement already accepted.
 
-### Calibrate pixels
+### Direct X alignment
 
-If you already know the pixel movement of the current **Distance / nudge**, enter
-it in **Linear Axis → Pixel calibration → Known distance / nudge** and click **Use known distance**.
-The hint shows the positive driver-step move that the value describes. Enter
-positive pixels when that move shifts the image right, or negative pixels when
-it shifts left. For example, **+400 driver steps** and **+20 px** give
-**+0.05 px/step**. This saves calibration for the connected live IDS or Basler
-camera and switches the nudge distance to pixels without moving the motor.
-You can then set the desired pixel nudge size in **Distance / nudge**. The saved
-calibration follows the same camera and step-resolution checks as measured calibration.
+With a live IDS or Basler camera, a reference, and released manual controls,
+click **Align X** or raise the configured **Align X** digital input from LOW
+to HIGH. The default channel is **3**. Holding it HIGH starts one attempt.
+Starting with the input HIGH, or pressing while the app is busy, requires
+release and a new rising edge. Configure or disable the trigger under
+**Digital inputs → Apply digital inputs**. If you assign a separate
+**Reference capture** channel, each rising edge can capture a reference, with
+at least one second between captures.
 
-Use a real IDS or Basler camera with a textured feature visible in the live
-image. **Linear Axis → Pixel calibration → Test move (steps)** defaults to **100**;
-adjust this signed distance for the available travel if needed. The selected test
-move is saved with settings and is also used by the digital Align X button when
-calibration is missing. Hover over
-**Run pixel calibration** in the toolbar to see the selected move distance, then click it. The app
-captures a fresh pre-move live image, performs that finite move, and compares the
-post-move image with that live baseline after the motor stops and camera queues
-are refreshed. Calibration uses the full live image, independently of the saved
-reference and matching regions; no saved reference is required or changed.
-If the movement is below 2 pixels or the match is uncertain, calibration is
-rejected; choose another test distance and retry. No automatic return move is
-made.
+If X is outside tolerance, alignment starts with one right relay nudge. It
+waits for relay release and camera settling, then compares the new signed
+`dx` with the previous measurement. It continues in the same direction
+when the error shrinks, and reverses when the error grows or crosses zero.
+The app checks for repeated endpoints and stops after 10 nudges without
+progress, 100 corrections, or 60 seconds. Three fresh, valid measurements
+inside the configured tolerance confirm alignment. Camera feedback uses a
+freshness barrier and at least 200 ms of settling after the nudge interval.
+Manual input, Stop, disconnect, or a change in camera or reference cancels
+alignment.
 
-The signed calibration is `pixels_per_step = change in measured X / change in
-motor position`. For example, a +400-driver-step move observed as +20 pixels gives
-**+0.05 px/step**. A 1-pixel nudge then uses 20 driver steps. A negative result is
-valid and tells automatic alignment that positive motor motion moves the image
-left. Successful calibration switches the nudge distance to pixels while keeping
-the same effective motor distance. Motor speed stays in driver steps/s. Keep **Invert
-motor direction** consistent with the left/right behavior you want from manual
-controls; alignment uses the measured calibration sign.
+### Optional pixel calibration
 
-The UI shows the effective driver-step distance after integer rounding;
-an amount below one driver step is rejected. Changing units preserves the
-effective distance and leaves motor speed unchanged. A step-resolution change clears pixel calibration;
-changing camera identity or image dimensions clears pixel calibration. Recalibrate
-pixels after changing magnification or the camera/axis geometry. If the camera's
-serial cannot be read, pixel calibration is cleared on reconnect.
-Older profiles with millimetre nudge settings load as equivalent driver-step
-distances. Older saved nudge speeds are replaced with the default **200 driver
-steps/s**. Changes made to the new advanced motor speed setting are saved with profiles.
+**Run pixel calibration** measures the signed X displacement per right relay
+press for the live camera. Set **Test presses** to the number of nudges.
+Positive counts pulse right and negative counts pulse left. The app compares
+settled frames against a live baseline. The total X movement must reach at
+least 2 pixels. Two right nudges that move the image 6 pixels left give
+**−3 px/right press**. The axis stays at the endpoint. You can also enter an
+existing measurement using **Known X / right press** and **Use known distance**.
 
-### Mechanical X alignment
-
-The extra **Align X direct** toolbar button is experimental and works without
-pixel calibration. With a live camera, reference, and released manual controls,
-it starts with **4 driver steps** to take up slack, doubles the move while error
-improves (or no image movement is measurable yet), and reverses/shrinks it if
-error grows. After X crosses the target, it halves on further crossings, down to
-one driver step, and keeps moving through slack after reversals. Every move is
-capped at the larger of **4 driver steps** and **Distance / nudge**; set the nudge
-above 4 driver steps to allow growth.
-It uses the same motor speed, settled/fresh feedback, tolerance confirmations,
-STOP, manual cancellation, and 100-correction / 60-second limits as normal
-alignment. It stops if motor position does not change, five maximum-size moves
-make no progress, or a one-step target crossing cannot meet the tolerance.
-It does not save or change pixel calibration, nudge settings, or the
-digital Align X trigger. The search lives in `direct_alignment.py`, with its
-own toolbar button and worker command so the experiment can be removed separately.
-To hide the test button immediately, set
-`MotionControls.ENABLE_DIRECT_ALIGNMENT_EXPERIMENT = False` in `motion_widgets.py`.
-
-With valid pixel calibration, a fixed reference, and neutral manual controls,
-click **Align X** on the main screen or press the button wired to digital input
-**3** (the default **Align X** channel). The digital trigger starts once per raw
-**LOW → HIGH** transition, independently of joystick polarity. Holding HIGH does
-not repeat. If pixel calibration is missing, the first press runs pixel calibration
-using **Test move (steps)** instead. This needs a live camera but no saved reference.
-After successful calibration, release and press again to align to the reference.
-If calibration fails or becomes invalid, the next press retries calibration.
-Connecting or assigning an already-HIGH input does not start an operation;
-the input must first be observed LOW. Presses during a move, calibration, alignment,
-or Stop are discarded, as are presses when the camera or motor is not ready, or
-when alignment needs a reference. Release and press again to retry. Change or disable the channel
-under **Digital inputs**, then click **Apply digital inputs**. Saved profiles retain
-the selection. Older profiles that already use channel 3 for another action keep
-that wiring and start with the new Align X trigger disabled.
-Each correction is capped at the current nudge distance and
-uses **200 driver steps/s** unless changed under **Advanced motor settings**.
-Distance / nudge is the main alignment adjustment. After each move, the controller waits at least
-200 ms (extended for exposure/frame timing), refreshes camera queues, and uses
-only new feedback before correcting again. These frame timestamps describe
-application acquisition, not sensor exposure timestamps.
-
-**X aligned** requires three fresh, valid measurements within the existing **Tolerance**
-in pixels. Y displacement remains visible; the axis cannot correct Y.
-Demo, image replay, and video replay cannot drive automatic alignment. An uncertain
-match may drive coarse X corrections when either **|X| or |Y| exceeds 10 px and
-the current tolerance**. When both offsets are at or below that threshold, an
-uncertain match pauses further corrections while the controller retries camera
-feedback for up to **3 seconds**. Invalid, nonfinite, and stale feedback use the
-same recovery window, both between corrections and during movement. The current
-finite move may finish, but no new correction uses rejected feedback. A fresh,
-usable measurement resumes the operation; continued failure stops it. Invalid
-or nonfinite estimates remain blocked at any offset; pixel calibration still
-requires valid matches. If X is already within tolerance
-but a large Y offset permits an uncertain match, the controller waits for valid
-measurements before confirming completion. The match quality details below the
-readout identify which check failed. Select a textured rectangle or circle and
-check that both images share the same feature.
-Unrecovered feedback loss, increasing error, ten unsuccessful corrections,
-insufficient step resolution, 100 corrections, or 60 seconds stop the attempt
-with a status message. Manual input cancels calibration/alignment and requires neutral before
-manual movement resumes. Changing the source, reference, matching or motion
-settings, pausing, disconnecting, or closing also cancels the operation.
-
-Failed calibration or alignment attempts stop motion while keeping movement
-enabled. Once the motor has stopped, retry the operation directly or release
-the manual controls and press again to nudge; no **Enable motor** click is needed.
-Driver faults, motor move timeouts, and motor setup changes still disable movement
-and require **Enable motor** after resolving the problem or applying settings.
-
-Motion commands are finite, and shutdown stops the motor before disabling power.
-If the driver is already disabled, Stop and shutdown verify zero velocity and no
-remaining steps without sending the stop command, which the firmware rejects
-while the driver is off.
-There is no homing or end-stop integration in this version. Hardware-free tests
-exercise fake SDKs and simulated motor/camera feedback; commissioning on the
-actual axis is still required.
+Alignment works independently of the saved pixel measurement. Old profiles
+keep their relay and input settings. If a profile specifies a test in driver
+steps, the app preserves the direction as one relay press.

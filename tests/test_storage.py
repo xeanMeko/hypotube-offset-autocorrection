@@ -119,9 +119,8 @@ def test_profile_rejects_unsupported_matching_method(tmp_path, method):
 
 def test_motion_profile_roundtrip_keeps_original_loader_contract(tmp_path):
     from measure_shift.motion import MotionConfig
-    motion = MotionConfig(motor_current_ma=800, jog_distance=2, motor_speed=400,
-                          jog_unit="pixels", repeat_hz=3.5,
-                          pixels_per_step=-.05, calibration_shape=(480, 640),
+    motion = MotionConfig(pulse_ms=120, release_ms=140, repeat_hz=3.5,
+                          pixels_per_right_press=-.05, calibration_shape=(480, 640),
                           calibration_source_id="ids:serial:example")
     path = tmp_path / "motion.json"
     save_profile(path, MatchConfig(), 1, 1, motion=motion.to_dict())

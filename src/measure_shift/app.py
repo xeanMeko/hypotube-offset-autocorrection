@@ -43,7 +43,7 @@ def default_settings_path() -> Path:
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, *, motion_hardware=None, settings_path=None):
+    def __init__(self, *, motion_hardware=None, joystick=None, settings_path=None):
         super().__init__()
         self._settings_path = Path(settings_path) if settings_path is not None else default_settings_path()
         self._restoring_settings = True
@@ -96,7 +96,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._motion_status = None
         self._reference_capture_request = None
         self._last_digital_reference_at = None
-        self.motion = MotionWorker(hardware=motion_hardware, freshness_callback=self._request_motion_frames,
+        self.motion = MotionWorker(hardware=motion_hardware, joystick=joystick, freshness_callback=self._request_motion_frames,
                                    calibration_worker=self.measurement)
         self._build_ui()
         self.axis_keyboard = AxisKeyboardFilter(self)
@@ -339,16 +339,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tools_menu.addAction(self.motion_dock.toggleViewAction())
         self.motion_dock.config_changed.connect(self._motion_config_changed)
         self.motion_controls.connect_button.toggled.connect(self._connect_motion)
-        self.motion_dock.setup_requested.connect(self.motion.apply_setup)
         self.motion_dock.arm_requested.connect(self.motion.arm)
         self.motion_controls.stop_button.clicked.connect(self._stop_motion)
         self.motion_controls.calibrate_button.clicked.connect(
-            lambda: self._calibrate_motion(self.motion_dock.test_steps.value()))
-        self.motion_dock.test_steps.valueChanged.connect(
-            lambda: self.motion_controls.set_calibration_move(self.motion_dock.test_steps.value()))
+            lambda: self._calibrate_motion(self.motion_dock.test_presses.value()))
+        self.motion_dock.test_presses.valueChanged.connect(
+            lambda: self.motion_controls.set_calibration_move(self.motion_dock.test_presses.value()))
         self.motion_dock.known_distance_requested.connect(self._set_known_pixel_distance)
         self.motion_controls.align_button.clicked.connect(self._align_motion)
-        self.motion_controls.direct_align_button.clicked.connect(self._align_motion_direct)
         self.motion_dock.error.connect(self._error)
 
         file_menu = self.menuBar().addMenu("File")
@@ -471,20 +469,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.axis_keyboard.clear()
         self.motion.stop()
 
-    def _calibrate_motion(self, steps):
+    def _calibrate_motion(self, presses):
         self.motion.set_context(self._axis_context())
         try:
-            self.motion.calibrate(steps)
+            self.motion.calibrate(presses)
         except ValueError as exc:
             self._error(exc)
 
     def _align_motion(self):
         self.motion.set_context(self._axis_context())
         self.motion.align()
-
-    def _align_motion_direct(self):
-        self.motion.set_context(self._axis_context())
-        self.motion.align_direct()
 
     def _set_known_pixel_distance(self, pixels):
         context = self._axis_context()
@@ -495,17 +489,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if not math.isfinite(pixels) or pixels == 0:
                 raise ValueError("Known pixel movement must be finite and nonzero")
             old = self.motion_dock.config
-            scale = pixels / old.distance_steps()
-            config = replace(old, pixels_per_step=scale,
-                             calibration_source_id=context.source_id, calibration_shape=context.shape,
-                             jog_unit="pixels", jog_distance=abs(pixels)).validated()
+            config = old.with_press_scale(pixels, context)
         except ValueError as exc:
             self._error(exc)
             return
         self.motion.set_context(context)
         self.motion_dock.set_config(config, preserve_input_edits=True)
         self._motion_config_changed(config)
-        self.notice.setText(f"Known pixel distance saved: {pixels:+.6g} px/nudge ({scale:+.6g} px/driver step)")
+        self.notice.setText(f"Known pixel distance saved: {pixels:+.6g} px/right press")
 
     def _poll_motion(self):
         context = self._axis_context()
