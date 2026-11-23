@@ -41,8 +41,6 @@ class MotionConfig:
     pulse_ms: int = 80
     release_ms: int = 100
     pixels_per_right_press: float | None = None
-    axis_mode: str = "external"
-    stepper_uid: str = "2eoQ"
 
     def validated(self) -> MotionConfig:
         if not isinstance(self.host, str) or not self.host.strip():
@@ -52,12 +50,6 @@ class MotionConfig:
         if not isinstance(self.digital_uid, str):
             raise ValueError("Digital In UID must be text")
         uids = [self.output_uid, self.digital_uid] if self.digital_uid else [self.output_uid]
-        if self.axis_mode not in ("external", "bench"):
-            raise ValueError("Select External machine or Silent Stepper bench")
-        if not isinstance(self.stepper_uid, str):
-            raise ValueError("Bench stepper UID must be text")
-        if self.axis_mode == "bench":
-            uids.append(self.stepper_uid)
         if not all(isinstance(v, str) and v.strip() for v in uids):
             raise ValueError("Enter a UID for each required motion Bricklet")
         if len(set(uids)) != len(uids):
@@ -114,8 +106,6 @@ class MotionConfig:
             raise ValueError("Motion settings must be an object")
         names = {f.name for f in fields(cls)}
         kwargs = {key: item for key, item in value.items() if key in names}
-        if kwargs.get("stepper_uid") is None and kwargs.get("axis_mode", "external") == "external":
-            kwargs["stepper_uid"] = cls.stepper_uid
         if "pixels_per_right_press" not in kwargs and value.get("bench_axis") is False:
             kwargs["pixels_per_right_press"] = value.get("factory_pixels_per_press")
         if kwargs.get("output_uid") == "23GY":
@@ -296,7 +286,7 @@ class MotionController:
         if self._operation or self._pending_operation:
             self.cancel("Motion settings changed", disarm=False)
         press_changed = any(getattr(old, name) != getattr(config, name) for name in
-                            ("host", "port", "output_uid", "left_channel", "right_channel", "pulse_ms", "axis_mode", "stepper_uid"))
+                            ("host", "port", "output_uid", "left_channel", "right_channel", "pulse_ms"))
         if press_changed and config.pixels_per_right_press == old.pixels_per_right_press:
             config = config.without_press_scale()
         if config.pixels_per_right_press is not None and not config.calibration_source_id and self.context.shape is not None:
@@ -914,7 +904,7 @@ class MotionWorker(threading.Thread):
         if name == "configure":
             config, revision = value
             connection_changed = any(getattr(config, key) != getattr(controller.config, key) for key in
-                                     ("host", "port", "digital_uid", "output_uid", "axis_mode", "stepper_uid"))
+                                     ("host", "port", "digital_uid", "output_uid"))
             if connection_changed and controller.connected:
                 self.joystick.shutdown()
                 controller.on_disconnected("Motion connection settings changed; reconnect")

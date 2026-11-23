@@ -40,7 +40,7 @@ def sdk(monkeypatch):
 
         def enumerate(self):
             fake.calls.append(("enumerate",))
-            identities = fake.identities or {"2eoQ": 2166, "2j7T": 26, "27s4": 2100 if fake.version == 2 else 223}
+            identities = fake.identities or {"2j7T": 26, "27s4": 2100 if fake.version == 2 else 223}
             for uid, identifier in identities.items():
                 if uid not in fake.missing:
                     self.callbacks[self.CALLBACK_ENUMERATE](uid, "master", "a", [2, 0, 0], [2, 0, 0], identifier, 0)
@@ -112,6 +112,9 @@ def sdk(monkeypatch):
 
 
 def install_bench_stepper(sdk):
+    if sdk.identities is None:
+        sdk.identities = {"2j7T": 26, "27s4": 2100}
+    sdk.identities["abc"] = 2166
     device = Mock(STEP_RESOLUTION_8=5, OVER_TEMPERATURE_LIMIT=2)
     data = SimpleNamespace(current_velocity=0, remaining_steps=0, input_voltage=24000)
     device.get_all_data.return_value = data
@@ -173,14 +176,29 @@ def test_missing_uid_reports_actual_uid_and_releases_connection(sdk):
     assert sdk.calls[-1] == ("disconnect",)
 
 
-def test_bench_mode_requires_the_selected_stepper_before_accepting_presses(sdk):
+def test_reconnect_rediscovers_stepper_and_falls_back_when_absent(sdk):
     motor = install_bench_stepper(sdk)
-    sdk.missing.add("2eoQ")
-    port = WiredJoystick(sdk.adapter, lambda: MotionConfig(axis_mode="bench"))
-    with pytest.raises(MotionHardwareError, match="not found: 2eoQ"):
-        port.connect()
+    port = WiredJoystick(sdk.adapter, MotionConfig)
+    port.connect()
+    sdk.connection.callbacks[sdk.connection.CALLBACK_ENUMERATE]("abc", None, None, None, None, None, 2)
+    with pytest.raises(MotionHardwareError, match="abc was disconnected"):
+        port.read_inputs()
+    port.shutdown()
+
+    sdk.missing.add("abc")
+    port.connect()
+    port.nudge(Direction.RIGHT)
+    assert ("monoflop", 1, True, 80) in sdk.calls
+    motor.set_steps.assert_not_called()
+    port.shutdown()
+
+
+def test_multiple_discovered_steppers_prevent_motion(sdk):
+    motor = install_bench_stepper(sdk)
+    sdk.identities["def"] = 2166
+    with pytest.raises(MotionHardwareError, match="Multiple Silent Steppers"):
+        connect(sdk)
     assert not sdk.adapter.connected
-    assert not any(call[0] == "monoflop" for call in sdk.calls)
     motor.set_steps.assert_not_called()
 
 
@@ -315,7 +333,7 @@ def test_adapter_uses_real_optional_sdk_bindings_with_memory_transport(monkeypat
             return SimpleNamespace(IPConnection=MemoryConnection)
         return importlib.import_module(name)
 
-    adapter = TinkerforgeMotionHardware(load)
+    adapter = TinkerforgeMotionHardware(load, enumeration_timeout_s=.001)
     adapter.connect("memory-only", 4223, "27s4", "2j7T")
     assert adapter.read_inputs() == (False, True, False, True)
     adapter.press_output(1, 80)
@@ -397,9 +415,8 @@ def test_wired_joystick_press_repeats_at_configured_rate_and_stops_on_release(
     sdk.identities = {"2j7T": 284, "27s4": 2100}
     motor = None
     if mode == "bench":
-        sdk.identities["2eoQ"] = 2166
         motor = install_bench_stepper(sdk)
-    config = MotionConfig(active_high=active_high, repeat_hz=1, axis_mode=mode)
+    config = MotionConfig(active_high=active_high, repeat_hz=1)
     now = 0.
     port = WiredJoystick(sdk.adapter, lambda: config, clock=lambda: now)
     worker = MotionWorker(config, joystick=port)
@@ -442,7 +459,7 @@ def test_wired_joystick_press_repeats_at_configured_rate_and_stops_on_release(
 def test_bench_failure_after_relay_press_releases_and_stops_without_retry(sdk):
     motor = install_bench_stepper(sdk)
     motor.set_steps.side_effect = RuntimeError("stepper did not acknowledge move")
-    config = MotionConfig(axis_mode="bench")
+    config = MotionConfig()
     worker = MotionWorker(config, hardware=sdk.adapter)
     worker.connect_hardware()
     worker.start()
@@ -468,7 +485,7 @@ def test_camera_operations_wait_for_the_bench_motor_after_relay_release(sdk, ope
     from test_motion import CONTEXT, feedback
 
     motor = install_bench_stepper(sdk)
-    config = MotionConfig(axis_mode="bench")
+    config = MotionConfig()
     now = 0.
     port = WiredJoystick(sdk.adapter, lambda: config, clock=lambda: now)
     barriers = []

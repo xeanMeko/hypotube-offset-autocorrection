@@ -67,13 +67,7 @@ class WiredJoystick:
 
     def connect(self) -> None:
         cfg = self._config()
-        args = cfg.host, cfg.port, cfg.digital_uid or None, cfg.output_uid
-        if cfg.axis_mode == "bench":
-            self._bench = self._hardware.connect(*args, bench_uid=cfg.stepper_uid)
-            if self._bench is None:
-                raise MotionHardwareError("Bench mode requires a connected Silent Stepper")
-        else:
-            self._hardware.connect(*args)
+        self._bench = self._hardware.connect(cfg.host, cfg.port, cfg.digital_uid or None, cfg.output_uid)
 
     def read_inputs(self) -> tuple[bool, bool, bool, bool]:
         cfg = self._config()

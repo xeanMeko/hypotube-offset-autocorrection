@@ -169,22 +169,15 @@ class MotionDock(QtWidgets.QDockWidget):
         layout = QtWidgets.QVBoxLayout(content)
         connection = QtWidgets.QGroupBox("Bricklet connection")
         form = QtWidgets.QFormLayout(connection)
-        self.axis_mode = QtWidgets.QComboBox()
-        self.axis_mode.addItem("External machine", "external")
-        self.axis_mode.addItem("Silent Stepper bench", "bench")
-        self.axis_mode.setToolTip("Disconnect hardware to change the axis mode.")
-        form.addRow("Axis mode", self.axis_mode)
         self.host = QtWidgets.QLineEdit()
         self.port = QtWidgets.QSpinBox()
         self.port.setRange(1, 65535)
         self.digital_uid = QtWidgets.QLineEdit()
         self.output_uid = QtWidgets.QLineEdit()
-        self.stepper_uid = QtWidgets.QLineEdit()
-        self.stepper_uid.setToolTip("Silent Stepper Bricklet 2.0 on the bench.")
         self.digital_uid.setToolTip("Leave empty for relay-only operation without digital input triggers.")
         for label, control in (("Host", self.host), ("Port", self.port),
                                ("Digital In UID", self.digital_uid),
-                               ("Dual Relay UID", self.output_uid), ("Bench stepper UID", self.stepper_uid)):
+                               ("Dual Relay UID", self.output_uid)):
             form.addRow(label, control)
         self.pulse_ms = QtWidgets.QSpinBox()
         self.pulse_ms.setRange(1, 5000)
@@ -265,8 +258,7 @@ class MotionDock(QtWidgets.QDockWidget):
         scroll.setWidget(content)
         self.setWidget(scroll)
         self.setMinimumWidth(320)
-        self.axis_mode.currentIndexChanged.connect(self._edited)
-        for control in (self.host, self.digital_uid, self.output_uid, self.stepper_uid):
+        for control in (self.host, self.digital_uid, self.output_uid):
             control.editingFinished.connect(self._edited)
         for control in (self.port, self.frequency, self.test_presses, self.pulse_ms, self.release_ms):
             control.valueChanged.connect(self._edited)
@@ -323,13 +315,10 @@ class MotionDock(QtWidgets.QDockWidget):
         self._syncing = True
         try:
             self._config = config
-            self.axis_mode.setCurrentIndex(self.axis_mode.findData(config.axis_mode))
-            self.stepper_uid.setEnabled(self.axis_mode.isEnabled() and config.axis_mode == "bench")
             self.pulse_ms.setValue(config.pulse_ms)
             self.release_ms.setValue(config.release_ms)
             for control, value in ((self.host, config.host),
-                                   (self.digital_uid, config.digital_uid), (self.output_uid, config.output_uid),
-                                   (self.stepper_uid, config.stepper_uid)):
+                                   (self.digital_uid, config.digital_uid), (self.output_uid, config.output_uid)):
                 control.setText(value)
             self.port.setValue(config.port)
             for name, value in input_values.items():
@@ -353,12 +342,11 @@ class MotionDock(QtWidgets.QDockWidget):
         old = self._config
         try:
             config = replace(old, host=self.host.text().strip(), port=self.port.value(),
-                             axis_mode=self.axis_mode.currentData(), stepper_uid=self.stepper_uid.text().strip(),
                              output_uid=self.output_uid.text().strip(), digital_uid=self.digital_uid.text().strip(),
                              pulse_ms=self.pulse_ms.value(), release_ms=self.release_ms.value(),
                              repeat_hz=self.frequency.value(), calibration_presses=self.test_presses.value()).validated()
             if any(getattr(config, key) != getattr(old, key) for key in
-                   ("host", "port", "output_uid", "pulse_ms", "axis_mode", "stepper_uid")):
+                   ("host", "port", "output_uid", "pulse_ms")):
                 config = config.without_press_scale()
                 self.set_config(config, preserve_input_edits=True)
             else:
@@ -370,9 +358,8 @@ class MotionDock(QtWidgets.QDockWidget):
             self.error.emit(str(exc))
 
     def _display_connection(self, connected):
-        for control in (self.host, self.port, self.digital_uid, self.output_uid, self.axis_mode):
+        for control in (self.host, self.port, self.digital_uid, self.output_uid):
             control.setEnabled(not connected)
-        self.stepper_uid.setEnabled(not connected and self._config.axis_mode == "bench")
 
     def set_connected(self, connected):
         self._display_connection(connected)

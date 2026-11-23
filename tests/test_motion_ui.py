@@ -462,7 +462,7 @@ def test_startup_connects_using_restored_axis_settings(application, tmp_path):
 
     path = tmp_path / "startup.json"
     config = MotionConfig(host="saved-host", port=4224, digital_uid="saved-input")
-    legacy = dict(config.to_dict(), stepper_uid="saved-stepper", motor_current_ma=900, step_resolution=16)
+    legacy = dict(config.to_dict(), axis_mode="bench", stepper_uid="saved-stepper", motor_current_ma=900, step_resolution=16)
     save_profile(path, MatchConfig(), 1, 1, motion=legacy)
 
     class RecordingHardware(FakeHardware):
@@ -475,54 +475,15 @@ def test_startup_connects_using_restored_axis_settings(application, tmp_path):
     try:
         pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
              timeout=3, required=True)
+        assert not hasattr(window.motion_dock, "axis_mode")
+        assert not hasattr(window.motion_dock, "stepper_uid")
+        assert MotionConfig.from_dict(legacy).to_dict() == config.to_dict()
         assert hardware.connection_args == ("saved-host", 4224, "saved-input", "2j7T")
         assert hardware.pulses == []
         assert hardware.calls.count("connect") == 1
         assert window.motion_controls.connect_button.isChecked()
     finally:
         window.close()
-        application.processEvents()
-
-
-def test_ui_saves_bench_mode_and_reconnects_to_selected_stepper(application, tmp_path):
-    from unittest.mock import Mock
-    from measure_shift.joystick import JoystickState
-
-    class BenchHardware(FakeHardware):
-        def connect(self, *args, bench_uid=None):
-            super().connect(*args)
-            self.connected_uid = bench_uid
-            if bench_uid is not None:
-                bench = Mock()
-                bench.read_state.return_value = JoystickState()
-                return bench
-
-    path = tmp_path / "bench-rig.json"
-    hardware = BenchHardware()
-    window = MainWindow(motion_hardware=hardware, settings_path=path)
-    try:
-        pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
-             timeout=3, required=True)
-        assert hardware.connected_uid is None
-        window.motion_controls.connect_button.click()
-        pump(application, lambda: window.motion_dock.axis_mode.isEnabled(), timeout=3, required=True)
-        dock = window.motion_dock
-        dock.axis_mode.setCurrentText("Silent Stepper bench")
-        assert dock.stepper_uid.isEnabled()
-        dock.stepper_uid.setText("my-bench")
-        dock.stepper_uid.editingFinished.emit()
-    finally:
-        window.close()
-    restored = MainWindow(motion_hardware=hardware, settings_path=path)
-    try:
-        pump(application, lambda: restored._motion_status and restored._motion_status.phase == "ready",
-             timeout=3, required=True)
-        assert hardware.connected_uid == "my-bench"
-        assert restored.motion_dock.axis_mode.currentData() == "bench"
-        assert not restored.motion_dock.axis_mode.isEnabled()
-        assert not hardware.pulses
-    finally:
-        restored.close()
         application.processEvents()
 
 
