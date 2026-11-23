@@ -6,12 +6,18 @@ import math
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
+from .brick_usb import master_brick_access
+
 if TYPE_CHECKING:
     from .bench_axis import SilentStepperBench
 
 
 class MotionHardwareError(RuntimeError):
     """An actionable motion transport or device error suitable for the UI."""
+
+
+class MasterBrickAccessError(MotionHardwareError):
+    """A local Master Brick is attached but inaccessible to this account."""
 
 
 class MotionHardware(Protocol):
@@ -135,6 +141,8 @@ class TinkerforgeMotionHardware:
             if self._connection_error:
                 raise MotionHardwareError(self._connection_error)
             missing = self._watched_uids - identities.keys()
+            if missing and False in master_brick_access(host):
+                raise MasterBrickAccessError("A local Master Brick needs USB read/write permission.")
             if missing:
                 raise MotionHardwareError("Motion Bricklet not found: " + ", ".join(sorted(missing)))
             relay_classes = {cls.DEVICE_IDENTIFIER: cls for cls in (dual_relay, industrial_relay)}

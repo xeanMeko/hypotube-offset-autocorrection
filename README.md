@@ -108,7 +108,16 @@ The bundle includes Python, the app's Python dependencies, and Brick Daemon.
 Running `measure-shift` starts the bundled daemon on `localhost:4223` if the
 local port is free and stops that subprocess on normal exit. The target needs
 `libusb-1.0-0` on Debian or Ubuntu and the desktop user's account needs read and
-write access to the Tinkerforge USB device. Camera drivers and manufacturer
+write access to the Tinkerforge USB device. At launch, Measure Shift checks the
+saved connection settings and connects the hardware automatically. If a local
+Master Brick (USB ID `16d0:063d`) needs access, the desktop immediately asks for
+administrator approval through polkit. After approval, Measure Shift applies a
+persistent udev rule and connects. You can cancel and continue using the app.
+For a Brick attached later, **Connect hardware** also offers **Enable Master
+Brick access** if discovery encounters the same permission issue. If discovery still fails,
+unplug and reconnect the Brick, then click **Connect hardware**.
+
+Camera drivers and manufacturer
 runtimes still need to be installed on the target computer. Brick Daemon source
 is available from [Tinkerforge](https://github.com/Tinkerforge/brickd).
 The resolved build dependencies are recorded in the bundle's

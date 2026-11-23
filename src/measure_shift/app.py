@@ -5,6 +5,7 @@ import argparse
 from collections import deque
 from dataclasses import replace
 import math
+import signal
 from pathlib import Path
 import sys
 import time
@@ -17,6 +18,7 @@ from PySide6 import QtWidgets
 from PySide6 import QtCore, QtGui
 import pyqtgraph as pg
 
+from .brick_usb import enable_master_brick_access, master_brick_access
 from .brickd import bundled_brickd
 from .models import FramePacket, MatchConfig, ReferenceSnapshot, Region, new_id
 from .motion import REFERENCE_CAPTURE_INTERVAL_S, MotionConfig, MotionContext, MotionWorker
@@ -94,6 +96,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._motion_revision = -1
         self._motion_config_revision = 0
         self._motion_status = None
+        self.brickd_process = None
         self._reference_capture_request = None
         self._last_digital_reference_at = None
         self.motion = MotionWorker(hardware=motion_hardware, joystick=joystick, freshness_callback=self._request_motion_frames,
@@ -109,7 +112,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._restore_startup_settings()
         self._connect_settings_autosave()
         self._restoring_settings = False
-        self._connect_motion(True)
+        if motion_hardware is None and joystick is None and False in master_brick_access(self.motion_dock.config.host):
+            self._enable_brick_access()
+        else:
+            self._connect_motion(True)
         self.motion.start()
         self.measurement.start()
         self.analytics.start()
@@ -339,6 +345,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tools_menu.addAction(self.motion_dock.toggleViewAction())
         self.motion_dock.config_changed.connect(self._motion_config_changed)
         self.motion_controls.connect_button.toggled.connect(self._connect_motion)
+        self.motion_controls.usb_access_button.clicked.connect(self._enable_brick_access)
         self.motion_dock.arm_requested.connect(self.motion.arm)
         self.motion_controls.stop_button.clicked.connect(self._stop_motion)
         self.motion_controls.calibrate_button.clicked.connect(
@@ -464,6 +471,30 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             revision = self.motion.disconnect_hardware()
         self.motion_controls.set_connection_pending(connected, revision)
+
+    def _enable_brick_access(self):
+        controls = self.motion_controls
+        controls.set_usb_setup_pending(True)
+        config_revision = self._motion_config_revision
+        connection_revision = controls.connection_revision
+
+        def failed(error):
+            controls.set_usb_setup_pending(False)
+            self._error(error)
+
+        def installed(_):
+            controls.set_usb_setup_pending(False)
+            if (self._closing or self._close_pending or self._motion_config_revision != config_revision
+                    or controls.connection_revision != connection_revision):
+                return
+            if self.brickd_process and self.motion_dock.config.port == MotionConfig.port:
+                self.brickd_process.send_signal(signal.SIGUSR1)
+            self.notice.setText("USB access enabled. Connecting hardware. If discovery fails, reconnect the Master Brick.")
+            self._connect_motion(True)
+
+        task = BackgroundTask(enable_master_brick_access, installed, failed)
+        self.tasks.append(task)
+        task.start()
 
     def _stop_motion(self):
         self.axis_keyboard.clear()
@@ -1326,8 +1357,9 @@ def main(argv=None):
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     application.setApplicationName("Measure Shift")
     application.setOrganizationName("Measure Shift")
-    with bundled_brickd():
+    with bundled_brickd() as process:
         window = MainWindow()
+        window.brickd_process = process
         window.show()
 
         def start():

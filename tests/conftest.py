@@ -17,3 +17,4 @@ def isolated_default_motion_hardware(monkeypatch):
             pass
 
     monkeypatch.setattr("measure_shift.motion.TinkerforgeMotionHardware", UnavailableHardware)
+    monkeypatch.setattr("measure_shift.app.master_brick_access", lambda host: [])

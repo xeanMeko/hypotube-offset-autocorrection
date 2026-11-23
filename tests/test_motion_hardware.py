@@ -11,7 +11,8 @@ from measure_shift.motion import MotionConfig, MotionController, MotionWorker
 
 
 @pytest.fixture
-def sdk():
+def sdk(monkeypatch):
+    monkeypatch.setattr("measure_shift.motion_hardware.master_brick_access", lambda host: [])
     fake = SimpleNamespace(calls=[], loaded=[], version=2, missing=set(), identities=None)
 
     class IPConnection:
@@ -509,3 +510,13 @@ def test_camera_operations_wait_for_the_bench_motor_after_relay_release(sdk, ope
         assert [c for c in sdk.calls if c[0] == "monoflop"] == [("monoflop", 1, True, 80)]
     finally:
         port.shutdown()
+
+
+def test_missing_bricklet_with_inaccessible_master_offers_usb_setup(sdk, monkeypatch):
+    from measure_shift.motion_hardware import MasterBrickAccessError
+
+    monkeypatch.setattr("measure_shift.motion_hardware.master_brick_access", lambda host: [False])
+    sdk.missing.add("27s4")
+    with pytest.raises(MasterBrickAccessError):
+        connect(sdk)
+    assert sdk.calls[-1] == ("disconnect",)

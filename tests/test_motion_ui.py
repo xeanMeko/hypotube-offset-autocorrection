@@ -853,3 +853,75 @@ def test_relay_settings_support_output_only_and_clear_scale_when_pulse_changes(a
     dock.pulse_ms.setValue(120)
     assert dock.config.pixels_per_right_press is None
     dock.close()
+
+
+def test_usb_access_button_retries_only_after_authorization(application, monkeypatch):
+    from measure_shift.motion_hardware import MasterBrickAccessError
+
+    authorized = False
+
+    class LockedHardware(FakeHardware):
+        def connect(self, *args):
+            super().connect(*args)
+            if not authorized:
+                raise MasterBrickAccessError("USB permission required")
+
+    def authorize():
+        nonlocal authorized
+        authorized = True
+
+    hardware = LockedHardware()
+    window = MainWindow(motion_hardware=hardware)
+    controls = window.motion_controls
+    try:
+        pump(application, controls.usb_access_action.isVisible, timeout=3, required=True)
+        def cancel():
+            raise RuntimeError("USB setup canceled")
+
+        monkeypatch.setattr("measure_shift.app.enable_master_brick_access", cancel)
+        controls.usb_access_button.click()
+        pump(application, lambda: window.notice.text() == "USB setup canceled", timeout=3, required=True)
+        assert hardware.calls.count("connect") == 1
+        monkeypatch.setattr("measure_shift.app.enable_master_brick_access", authorize)
+        controls.usb_access_button.click()
+        pump(application, lambda: window._motion_status.connected, timeout=3, required=True)
+        assert hardware.calls.count("connect") == 2
+        assert not controls.usb_access_action.isVisible()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("needs_access,cancel", [(True, False), (True, True), (False, False)])
+def test_startup_usb_authorization_precedes_connection(application, monkeypatch, needs_access, cancel):
+    hardware = FakeHardware()
+    prompted = threading.Event()
+    respond = threading.Event()
+
+    def authorize():
+        prompted.set()
+        assert respond.wait(3)
+        if cancel:
+            raise RuntimeError("USB setup canceled")
+
+    monkeypatch.setattr("measure_shift.motion.TinkerforgeMotionHardware", lambda: hardware)
+    monkeypatch.setattr("measure_shift.app.master_brick_access", lambda host: [not needs_access])
+    monkeypatch.setattr("measure_shift.app.enable_master_brick_access", authorize)
+    window = MainWindow()
+    try:
+        if needs_access:
+            pump(application, prompted.is_set, timeout=2, required=True)
+            assert "connect" not in hardware.calls
+            assert not window.motion_controls.connect_button.isEnabled()
+        respond.set()
+        if cancel:
+            pump(application, lambda: window.notice.text() == "USB setup canceled", timeout=2, required=True)
+            assert "connect" not in hardware.calls
+            assert window.motion_controls.connect_button.isEnabled()
+        else:
+            pump(application, lambda: window._motion_status and window._motion_status.connected,
+                 timeout=3, required=True)
+            assert hardware.calls.count("connect") == 1
+        assert prompted.is_set() == needs_access
+    finally:
+        respond.set()
+        window.close()

@@ -86,7 +86,8 @@ class MotionControls(QtCore.QObject):
         self.connect_button.setObjectName("axisConnectButton")
         self.connect_button.setCheckable(True)
         self.connect_button.setToolTip("Connect the joystick interface and enable movement. Release held directions before moving. Toggle off to stop and disconnect.")
-        self._connection_revision = 0
+        self.connection_revision = 0
+        self.usb_setup_pending = False
         self.calibrate_button = QtWidgets.QPushButton("Run pixel calibration")
         self.calibrate_button.setObjectName("pixelCalibrationButton")
         self.align_button = QtWidgets.QPushButton("Align X")
@@ -97,6 +98,10 @@ class MotionControls(QtCore.QObject):
         self.stop_button.setObjectName("axisStopButton")
         for button in (self.connect_button, self.calibrate_button, self.align_button, self.stop_button):
             toolbar.addWidget(button)
+        self.usb_access_button = QtWidgets.QPushButton("Enable Master Brick access")
+        self.usb_access_button.setToolTip("Ask an administrator to enable USB access on this PC and retry the connection.")
+        self.usb_access_action = toolbar.addWidget(self.usb_access_button)
+        self.usb_access_action.setVisible(False)
         self.status = QtWidgets.QLabel("Disconnected · motion disabled")
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.status.setWordWrap(False)
@@ -114,22 +119,32 @@ class MotionControls(QtCore.QObject):
             f"relay {unit}, and measure the pixel movement. "
             "Keep a textured feature visible. Change the test move in Linear Axis settings → Pixel calibration.")
 
+    def set_usb_setup_pending(self, pending):
+        self.usb_setup_pending = pending
+        self.usb_access_button.setEnabled(not pending)
+        if pending:
+            self.connect_button.setEnabled(False)
+
     def set_connection_pending(self, connected, revision):
-        self._connection_revision = revision
+        self.connection_revision = revision
         with QtCore.QSignalBlocker(self.connect_button):
             self.connect_button.setChecked(connected)
         self.connect_button.setEnabled(False)
 
     def display_status(self, status, context):
         # Set each action's final state once so refreshes do not cancel a mouse press.
-        if status.connection_revision >= self._connection_revision:
+        if status.connection_revision >= self.connection_revision:
             with QtCore.QSignalBlocker(self.connect_button):
                 self.connect_button.setChecked(status.connected)
             self.connect_button.setText("Disconnect hardware" if status.connected else "Connect hardware")
-            self.connect_button.setEnabled(True)
+            self.connect_button.setEnabled(not self.usb_setup_pending)
+        self.usb_access_action.setVisible(status.usb_access_needed and status.connection_revision == self.connection_revision)
         self.stop_button.setEnabled(status.connected)
         self.stop_button.setToolTip("Release the relays and cancel further presses. The axis controller handles any nudge already accepted.")
-        self.status.setText(f"{status.phase.upper()} · {status.message}")
+        if self.usb_setup_pending:
+            self.status.setText("Waiting for administrator approval for Master Brick USB access")
+        else:
+            self.status.setText(f"{status.phase.upper()} · {status.message}")
         self.status.setToolTip(self.status.text())
         idle = not status.busy and status.phase in ("idle", "ready", "aligned", "stopped")
         self.calibrate_button.setEnabled(status.armed and idle and context.live_camera_ready)

@@ -60,7 +60,7 @@ def bundled_brickd():
             deadline = time.monotonic() + 3
             while process.poll() is None and time.monotonic() < deadline and not _listening():
                 time.sleep(0.05)
-            yield
+            yield process
         finally:
             process.terminate()
             try:

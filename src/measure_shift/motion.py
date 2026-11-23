@@ -15,7 +15,7 @@ from typing import Callable
 
 from .direct_alignment import DirectXSearch
 from .joystick import INPUT_DEBOUNCE_S, Direction, JoystickPort, JoystickState, WiredJoystick
-from .motion_hardware import TinkerforgeMotionHardware
+from .motion_hardware import MasterBrickAccessError, TinkerforgeMotionHardware
 from .workers import LatestValue, MeasurementWorker
 
 
@@ -226,6 +226,7 @@ class MotionStatus:
     reference_capture: ReferenceCaptureRequest | None = None
     connection_revision: int = 0
     busy: bool = False
+    usb_access_needed: bool = False
 
 
 class MotionController:
@@ -241,6 +242,7 @@ class MotionController:
         self.config = (config or MotionConfig()).validated()
         self.config_revision = 0
         self.connection_revision = 0
+        self.usb_access_needed = False
         self.context = MotionContext()
         self.connected = False
         self.setup_applied = False
@@ -284,6 +286,7 @@ class MotionController:
     def configure(self, config: MotionConfig, revision: int = 0) -> None:
         config = config.validated()
         old = self.config
+        self.usb_access_needed = False
         if self._operation or self._pending_operation:
             self.cancel("Motion settings changed", disarm=False)
         press_changed = any(getattr(old, name) != getattr(config, name) for name in
@@ -338,6 +341,7 @@ class MotionController:
 
     def on_connected(self, state: JoystickState) -> None:
         self.connected = True
+        self.usb_access_needed = False
         self._reference_level = None
         self.reference_capture = None
         self._align_level = None
@@ -353,7 +357,8 @@ class MotionController:
         self.phase = "connected"
         self.message = "Connected. Enable movement with the controls released"
 
-    def on_disconnected(self, message="Motion hardware disconnected") -> None:
+    def on_disconnected(self, message="Motion hardware disconnected", *, usb_access_needed=False) -> None:
+        self.usb_access_needed = usb_access_needed
         self.connected = self.setup_applied = self.armed = False
         self.state = JoystickState()
         self._reference_level = None
@@ -744,7 +749,7 @@ class MotionController:
             dx=feedback.dx if feedback and math.isfinite(feedback.dx) else None,
             config=self.config, config_revision=self.config_revision,
             reference_capture=self.reference_capture, connection_revision=self.connection_revision,
-            busy=self.state.busy,
+            busy=self.state.busy, usb_access_needed=self.usb_access_needed,
         )
 
 
@@ -992,7 +997,7 @@ class MotionWorker(threading.Thread):
                     detail = f"Motion error: {exc}"
                     if shutdown_error is not None:
                         detail += f"; hardware shutdown incomplete: {shutdown_error}"
-                    self.controller.on_disconnected(detail)
+                    self.controller.on_disconnected(detail, usb_access_needed=isinstance(exc, MasterBrickAccessError))
                 status = self.controller.snapshot()
                 if self.wired_joystick and status.connected:
                     status = replace(status, inputs4=self.wired_joystick.raw_inputs)
