@@ -61,6 +61,39 @@ def start_demo(window, application):
     assert window.last_pair.result.usable, window.last_pair.result.reasons
 
 
+def test_failed_saved_source_falls_back_to_first_ids_camera(window, qt_application, monkeypatch):
+    attempts = []
+
+    def create(kind, **kwargs):
+        attempts.append((kind, kwargs))
+        raise RuntimeError("source unavailable")
+
+    monkeypatch.setattr("measure_shift.app.create_source", create)
+    monkeypatch.setattr("measure_shift.app.discover_sources", lambda kind: [
+        {"id": "first", "label": "First IDS"}, {"id": "second", "label": "Second IDS"},
+    ])
+    window._startup_ids_fallback = True
+    window.start_source("Video", path="missing.mp4")
+    pump_until(qt_application, lambda: len(attempts) == 2)
+    assert attempts[1][0].lower() == "ids"
+    assert attempts[1][1]["identifier"] == "first"
+    assert window.device.currentData() == "first"
+    assert window._startup_ids_fallback_attempted
+    assert "source unavailable" in window.notice.text()
+
+
+def test_failed_saved_source_reports_error_when_no_ids_camera(window, qt_application, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("saved source unavailable")
+
+    monkeypatch.setattr("measure_shift.app.create_source", fail)
+    monkeypatch.setattr("measure_shift.app.discover_sources", lambda kind: [])
+    window._startup_ids_fallback = True
+    window.start_source("Video", path="missing.mp4")
+    pump_until(qt_application, lambda: "saved source unavailable" in window.notice.text())
+    assert window._startup_ids_fallback_attempted
+
+
 def wait_current_config(window, application):
     pump_until(application, lambda: window.last_pair is not None and
                window.last_pair.key[0] == window.reference.reference_id and

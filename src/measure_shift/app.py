@@ -82,6 +82,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_render = None
         self._last_preview_ms = 0.0
         self._capture_error = None
+        self._startup_ids_fallback = False
+        self._startup_ids_fallback_attempted = False
         self._parameter_error = None
         self._control_owner = None
         self._controls_snapshot = None
@@ -581,6 +583,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tasks.append(task)
         task.start()
 
+    def _try_startup_ids_fallback(self, error):
+        """Try the first discovered IDS camera after the saved input fails."""
+        if not self._startup_ids_fallback or self._startup_ids_fallback_attempted:
+            return False
+        self._startup_ids_fallback_attempted = True
+        self._startup_ids_fallback = False
+        if self._axis_source_kind == "ids":
+            return False
+        self.notice.setText("Saved source failed; looking for an IDS camera…")
+
+        def found(devices):
+            if devices:
+                self.source_kind.setCurrentText("IDS")
+                self.device.clear()
+                for device in devices:
+                    self.device.addItem(device["label"], device["id"])
+                self.device.setCurrentIndex(0)
+                self.start_source("IDS", identifier=devices[0]["id"])
+            else:
+                self._error(error)
+
+        task = BackgroundTask(lambda: discover_sources("IDS"), found,
+                              lambda discovery_error: self._error(f"{error}; IDS discovery failed: {discovery_error}"))
+        self.tasks.append(task)
+        task.start()
+        return True
+
     def connect_selected(self):
         kind = self.source_kind.currentText()
         if kind == "Images":
@@ -634,7 +663,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.capture_worker.start()
             self.notice.setText("Starting input… Capture or load a reference when the image is ready.")
         except Exception as exc:
-            self._error(exc)
+            if not self._try_startup_ids_fallback(str(exc)):
+                self._error(exc)
 
     def disconnect_source(self, clear_reference=True):
         self._settings_camera()
@@ -1012,7 +1042,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     control.setEnabled(False)
             if worker.error and worker.error != self._capture_error:
                 self._capture_error = worker.error
-                self._error(worker.error)
+                self._try_startup_ids_fallback(worker.error) or self._error(worker.error)
                 self._update_readout()
             if worker.parameter_error and worker.parameter_error != self._parameter_error:
                 self._parameter_error = worker.parameter_error
@@ -1367,6 +1397,7 @@ def main(argv=None):
             remembered = (window.device.currentData() or "") if kind == window.source_kind.currentText().lower() else ""
             identifier = (args.device or remembered) if kind in ("ids", "basler") else ""
             path = (args.path or remembered) if kind in ("images", "video") else args.path
+            window._startup_ids_fallback = not args.demo and args.source is None and not args.device
             window.start_source(kind, identifier=identifier, path=path,
                                 auto_reference=kind == "demo" and not args.reference)
             if args.reference:
