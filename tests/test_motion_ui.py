@@ -195,7 +195,7 @@ def test_os_repeat_events_do_not_release_or_duplicate_real_key(application):
 
 
 def test_reference_channel_selector_supports_all_channels_and_disabled(application):
-    dock = MotionDock(MotionConfig(align_channel=None))
+    dock = MotionDock(MotionConfig(align_channel=None, reference_channel=None))
     changes = []
     dock.config_changed.connect(lambda config: changes.append(config.reference_channel))
     assert dock.reference_channel.currentData() is None
@@ -632,7 +632,7 @@ def test_invalid_channel_mapping_stays_pending_until_corrected(application):
 
 @pytest.mark.parametrize("direction", ["left_channel", "right_channel"])
 def test_shared_reference_input_is_rejected_until_assigned_separately(application, direction):
-    dock = MotionDock()
+    dock = MotionDock(MotionConfig(reference_channel=None))
     errors, changes = [], []
     dock.error.connect(errors.append)
     dock.config_changed.connect(changes.append)

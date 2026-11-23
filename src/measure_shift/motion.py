@@ -29,7 +29,7 @@ class MotionConfig:
     digital_uid: str = "27s4"
     left_channel: int = 2
     right_channel: int = 1
-    reference_channel: int | None = None
+    reference_channel: int | None = 0
     align_channel: int | None = 3
     active_high: bool = True
     repeat_hz: float = 2.0
@@ -128,6 +128,12 @@ class MotionConfig:
             # Preserve existing wiring when an older profile already uses
             # channel 3 for another action.
             kwargs["align_channel"] = None
+        if "reference_channel" not in kwargs and cls.reference_channel in (
+                kwargs.get("left_channel", cls.left_channel),
+                kwargs.get("right_channel", cls.right_channel),
+                kwargs.get("align_channel", cls.align_channel)):
+            # Preserve older wiring that already assigns the new default input.
+            kwargs["reference_channel"] = None
         if type(kwargs.get("reference_channel")) is int and kwargs["reference_channel"] in (
                 kwargs.get("left_channel", cls.left_channel), kwargs.get("right_channel", cls.right_channel)):
             # Older profiles allowed capture to share a joystick contact.

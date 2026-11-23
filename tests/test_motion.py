@@ -22,7 +22,7 @@ def state(position=0, velocity=0, remaining=0, *, fault=None):
 
 def ready(config=None, context=CONTEXT):
     # Exercise custom wiring here; worker/UI tests cover the axis defaults.
-    controller = MotionController(config or MotionConfig(left_channel=0))
+    controller = MotionController(config or MotionConfig(left_channel=0, reference_channel=None))
     controller.set_context(context)
     controller.on_connected(state())
     controller.on_setup_applied()
@@ -64,6 +64,20 @@ def test_invalid_configuration_is_rejected(field, value):
 def test_configuration_roundtrip():
     config = pixel_config(reference_channel=0, calibration_presses=-250, pulse_ms=125)
     assert MotionConfig.from_dict(config.to_dict()) == config
+
+
+def test_reference_capture_default_and_saved_preference():
+    assert MotionConfig().reference_channel == 0
+    assert MotionConfig.from_dict({}).reference_channel == 0
+    assert MotionConfig.from_dict({"reference_channel": None}).reference_channel is None
+    assert MotionConfig.from_dict({"reference_channel": 3, "align_channel": None}).reference_channel == 3
+
+
+@pytest.mark.parametrize("field", ["left_channel", "right_channel", "align_channel"])
+def test_legacy_wiring_on_default_reference_input_is_preserved(field):
+    config = MotionConfig.from_dict({field: 0})
+    assert getattr(config, field) == 0
+    assert config.reference_channel is None
 
 
 @pytest.mark.parametrize("channel", range(4))
@@ -114,12 +128,12 @@ def test_reference_capture_cooldown_discards_edges_without_replaying_held_high()
 
 
 def test_reference_capture_disabled_and_other_channels_do_not_trigger():
-    controller = MotionController(MotionConfig(align_channel=None))
+    controller = MotionController(MotionConfig(align_channel=None, reference_channel=None))
     controller.on_connected(state())
     for now, inputs in enumerate(((False,) * 4, (True,) * 4) * 2):
         controller.tick(now, inputs=inputs)
         assert controller.snapshot().reference_capture is None
-    assert MotionConfig.from_dict({}).reference_channel is None
+    assert MotionConfig.from_dict({}).reference_channel == 0
     controller.configure(replace(controller.config, reference_channel=3), 1)
     controller.tick(4, inputs=(False,) * 4)
     controller.tick(5, inputs=(True, True, True, False))
@@ -217,7 +231,7 @@ def test_digital_align_uses_raw_edge_and_fresh_feedback_without_repeating_held_h
 def test_digital_align_requires_low_after_connect_or_channel_change(channel, calibrated):
     controller = ready(pixel_config() if calibrated else MotionConfig())
     if channel != controller.config.align_channel:
-        controller.configure(replace(controller.config, align_channel=channel))
+        controller.configure(replace(controller.config, align_channel=channel, reference_channel=None))
     high = tuple(index == channel for index in range(4))
     assert not controller.tick(1, inputs=high)
     assert controller._operation is None
