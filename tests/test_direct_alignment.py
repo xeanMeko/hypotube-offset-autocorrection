@@ -78,7 +78,7 @@ class DirectAxis:
 
 @pytest.mark.parametrize("gain", [.25, -.25, 1, -1, 2.5, -2.5])
 @pytest.mark.parametrize("error", [40, -40])
-@pytest.mark.parametrize("slack", [0, 3, 7])
+@pytest.mark.parametrize("slack", [0, 3])
 def test_direct_alignment_converges_without_calibration_despite_slack(gain, error, slack):
     # Whole-nudge backlash leaves these targets reachable on the discrete axis.
     axis = DirectAxis(error=error, gain=gain, slack=slack * 4, nudge=4)
@@ -89,6 +89,13 @@ def test_direct_alignment_converges_without_calibration_despite_slack(gain, erro
     assert {abs(steps) for steps in axis.steps} == {4}
     assert axis.controller.config == axis.original_config
     assert axis.controller.config.pixels_per_right_press is None
+
+
+def test_direct_alignment_stops_when_slack_exceeds_no_progress_limit():
+    axis = DirectAxis(slack=7 * 4, nudge=4)
+    axis.run()
+    assert "4 joystick nudges without progress" in axis.controller.message
+    assert axis.controller.armed
 
 
 def test_default_nudge_probes_right_and_preserves_settings():

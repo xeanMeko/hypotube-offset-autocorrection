@@ -884,7 +884,7 @@ def test_motion_feedback_preserves_uncertainty_and_both_offsets():
 
 
 def test_repeated_no_progress_stops_alignment_without_disarming():
-    errors = (5,) * 11
+    errors = (5,) * 5
     controller = ready(pixel_config())
     controller.request_align()
     controller.tick(1)
@@ -897,7 +897,7 @@ def test_repeated_no_progress_stops_alignment_without_disarming():
             assert moves(actions)
             position -= 1
             controller.tick(now + .1, state(position))
-    assert "10 joystick nudges without progress" in controller.message
+    assert "4 joystick nudges without progress" in controller.message
     assert controller.armed and controller._operation is None
 
 

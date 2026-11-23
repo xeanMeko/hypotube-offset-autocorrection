@@ -44,7 +44,7 @@ class DirectXSearch:
             self._no_progress = 0
         else:
             self._no_progress += 1
-            if self._no_progress >= 10:
-                raise ValueError("Direct X alignment stopped after 10 joystick nudges without progress")
+            if self._no_progress >= 4:
+                raise ValueError("Direct X alignment stopped after 4 joystick nudges without progress")
         self._previous_dx = dx
         return self._direction
