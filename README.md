@@ -329,7 +329,7 @@ pixel clock, frame rate, and exposure changes with actual camera readback and
 continued acquisition. Sustained acquisition and Basler hardware still need validation.
 Rotation/scale compensation remains outside this version.
 
-## Linear axis
+## Motion setup
 
 Install the optional motion bindings in the same environment as the app:
 
@@ -337,7 +337,7 @@ Install the optional motion bindings in the same environment as the app:
 .venv/bin/python -m pip install -c requirements-lock.txt -e '.[motion]'
 ```
 
-Choose the **Axis mode** in **Tools → Linear Axis** with hardware disconnected.
+Choose the **Axis mode** in **Tools → Motion Setup** with hardware disconnected.
 **External machine** sends one relay press per nudge. The receiving joystick
 controller determines the travel and speed. Profiles without an axis mode use
 this setting.
@@ -348,7 +348,7 @@ bench stepper (default UID `2eoQ`). One nudge is eight 1/8 microsteps, at
 waits for both the motor movement and relay release before requesting settled
 camera feedback. Reconnect hardware after selecting the mode.
 
-In **Tools → Linear Axis**, set
+In **Tools → Motion Setup**, set
 the Brick Daemon host and port, Dual Relay UID and optional Digital In UID.
 Defaults are `localhost:4223`, relay **2j7T**, and Digital In **27s4**. The
 app connects at startup and waits for the controls to be released. Use

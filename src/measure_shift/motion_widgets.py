@@ -9,6 +9,9 @@ from PySide6 import QtCore
 from .motion import MotionConfig
 
 
+MOTION_SETUP_TITLE = "Motion Setup"
+
+
 class AxisKeyboardFilter(QtCore.QObject):
     """Merge physical key state rather than relying on operating-system repeat."""
 
@@ -117,7 +120,7 @@ class MotionControls(QtCore.QObject):
         self.calibrate_button.setToolTip(
             f"Capture a fresh live image, send {abs(presses):,} {direction} "
             f"relay {unit}, and measure the pixel movement. "
-            "Keep a textured feature visible. Change the test move in Linear Axis settings → Pixel calibration.")
+            f"Keep a textured feature visible. Change the test move in {MOTION_SETUP_TITLE} → Pixel calibration.")
 
     def set_usb_setup_pending(self, pending):
         self.usb_setup_pending = pending
@@ -158,7 +161,7 @@ class MotionDock(QtWidgets.QDockWidget):
     error = QtCore.Signal(str)
 
     def __init__(self, config=None, parent=None):
-        super().__init__("Linear Axis", parent)
+        super().__init__(MOTION_SETUP_TITLE, parent)
         self.setObjectName("linearAxisDock")
         self._config = config or MotionConfig()
         self._syncing = False
