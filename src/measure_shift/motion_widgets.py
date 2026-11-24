@@ -6,6 +6,7 @@ from dataclasses import replace
 from PySide6 import QtWidgets
 from PySide6 import QtCore
 
+from .i18n import Language, Term
 from .motion import MotionConfig
 
 
@@ -83,29 +84,31 @@ class AxisKeyboardFilter(QtCore.QObject):
 class MotionControls(QtCore.QObject):
     """Everyday axis actions and status readout."""
 
-    def __init__(self, toolbar):
+    def __init__(self, toolbar, language=None):
         super().__init__(toolbar)
-        self.connect_button = QtWidgets.QPushButton("Connect hardware")
+        self.ui = language or Language(parent=self)
+        self.compact = self.connected = False
+        self.connect_button = self.ui.button("Connect hardware")
         self.connect_button.setObjectName("axisConnectButton")
         self.connect_button.setCheckable(True)
-        self.connect_button.setToolTip("Connect the joystick interface and enable movement. Release held directions before moving. Toggle off to stop and disconnect.")
+        self.ui.bind(self.connect_button.setToolTip, "Connect the joystick interface and enable movement. Release held directions before moving. Toggle off to stop and disconnect.")
         self.connection_revision = 0
         self.usb_setup_pending = False
-        self.calibrate_button = QtWidgets.QPushButton("Run pixel calibration")
+        self.calibrate_button = self.ui.button("Run pixel calibration")
         self.calibrate_button.setObjectName("pixelCalibrationButton")
-        self.align_button = QtWidgets.QPushButton("Align X")
+        self.align_button = self.ui.button("Align X")
         self.align_button.setObjectName("alignXButton")
-        self.align_button.setToolTip(
+        self.ui.bind(self.align_button.setToolTip,
             "Use a fresh camera measurement after each relay nudge to align X to the reference.")
-        self.stop_button = QtWidgets.QPushButton("STOP")
+        self.stop_button = self.ui.button("STOP")
         self.stop_button.setObjectName("axisStopButton")
         for button in (self.connect_button, self.calibrate_button, self.align_button, self.stop_button):
             toolbar.addWidget(button)
-        self.usb_access_button = QtWidgets.QPushButton("Enable Master Brick access")
-        self.usb_access_button.setToolTip("Ask an administrator to enable USB access on this PC and retry the connection.")
+        self.usb_access_button = self.ui.button("Enable Master Brick access")
+        self.ui.bind(self.usb_access_button.setToolTip, "Ask an administrator to enable USB access on this PC and retry the connection.")
         self.usb_access_action = toolbar.addWidget(self.usb_access_button)
         self.usb_access_action.setVisible(False)
-        self.status = QtWidgets.QLabel("Disconnected · motion disabled")
+        self.status = self.ui.label("Disconnected · motion disabled")
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.status.setWordWrap(False)
         self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -115,12 +118,28 @@ class MotionControls(QtCore.QObject):
             button.setEnabled(False)
 
     def set_calibration_move(self, presses):
-        direction = "right" if presses > 0 else "left"
-        unit = "press" if abs(presses) == 1 else "presses"
-        self.calibrate_button.setToolTip(
-            f"Capture a fresh live image, send {abs(presses):,} {direction} "
-            f"relay {unit}, and measure the pixel movement. "
-            f"Keep a textured feature visible. Change the test move in {MOTION_SETUP_TITLE} → Pixel calibration.")
+        direction = Term("right" if presses > 0 else "left")
+        unit = Term("press" if abs(presses) == 1 else "presses")
+        self.ui.bind(self.calibrate_button.setToolTip,
+                     "Capture a fresh live image, send {0:,} {1} relay {2}, and measure the pixel movement. "
+                     "Keep a textured feature visible. Change the test move in Motion Setup → Pixel calibration.",
+                     abs(presses), direction, unit)
+
+    def _connection_caption(self, connected):
+        if self.compact:
+            return "Disconnect" if connected else "Connect"
+        return "Disconnect hardware" if connected else "Connect hardware"
+
+    def set_compact(self, compact):
+        self.compact = compact
+        self.ui.bind(self.calibrate_button.setText, "Calibrate" if compact else "Run pixel calibration")
+        self.ui.bind(self.connect_button.setText, self._connection_caption(self.connected))
+        button = self.connect_button
+        button.ensurePolished()
+        metrics = button.fontMetrics()
+        padding = button.sizeHint().width() - metrics.horizontalAdvance(button.text())
+        button.setFixedWidth(max(metrics.horizontalAdvance(self.ui.text(self._connection_caption(state)))
+                                 for state in (False, True)) + padding + 2)
 
     def set_usb_setup_pending(self, pending):
         self.usb_setup_pending = pending
@@ -139,16 +158,18 @@ class MotionControls(QtCore.QObject):
         if status.connection_revision >= self.connection_revision:
             with QtCore.QSignalBlocker(self.connect_button):
                 self.connect_button.setChecked(status.connected)
-            self.connect_button.setText("Disconnect hardware" if status.connected else "Connect hardware")
+            self.connected = status.connected
+            self.ui.bind(self.connect_button.setText, self._connection_caption(status.connected))
             self.connect_button.setEnabled(not self.usb_setup_pending)
         self.usb_access_action.setVisible(status.usb_access_needed and status.connection_revision == self.connection_revision)
         self.stop_button.setEnabled(status.connected)
-        self.stop_button.setToolTip("Release the relays and cancel further presses. The axis controller handles any nudge already accepted.")
+        self.ui.bind(self.stop_button.setToolTip, "Release the relays and cancel further presses. The axis controller handles any nudge already accepted.")
         if self.usb_setup_pending:
-            self.status.setText("Waiting for administrator approval for Master Brick USB access")
+            message = ("Waiting for administrator approval for Master Brick USB access",)
         else:
-            self.status.setText(f"{status.phase.upper()} · {status.message}")
-        self.status.setToolTip(self.status.text())
+            message = ("{} · {}", Term(status.phase.upper()), Term(status.message))
+        self.ui.bind(self.status.setText, *message)
+        self.ui.bind(self.status.setToolTip, *message)
         idle = not status.busy and status.phase in ("idle", "ready", "aligned", "stopped")
         self.calibrate_button.setEnabled(status.armed and idle and context.live_camera_ready)
         self.align_button.setEnabled(status.armed and idle and context.camera_ready)
@@ -160,39 +181,41 @@ class MotionDock(QtWidgets.QDockWidget):
     known_distance_requested = QtCore.Signal(float)
     error = QtCore.Signal(str)
 
-    def __init__(self, config=None, parent=None):
-        super().__init__(MOTION_SETUP_TITLE, parent)
+    def __init__(self, config=None, parent=None, language=None):
+        super().__init__(parent)
+        self.ui = language or Language(parent=self)
+        self.ui.bind(self.setWindowTitle, MOTION_SETUP_TITLE)
         self.setObjectName("linearAxisDock")
         self._config = config or MotionConfig()
         self._syncing = False
         content = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content)
-        connection = QtWidgets.QGroupBox("Bricklet connection")
+        connection = self.ui.group("Bricklet connection")
         form = QtWidgets.QFormLayout(connection)
         self.host = QtWidgets.QLineEdit()
         self.port = QtWidgets.QSpinBox()
         self.port.setRange(1, 65535)
         self.digital_uid = QtWidgets.QLineEdit()
         self.output_uid = QtWidgets.QLineEdit()
-        self.digital_uid.setToolTip("Leave empty for relay-only operation without digital input triggers.")
+        self.ui.bind(self.digital_uid.setToolTip, "Leave empty for relay-only operation without digital input triggers.")
         for label, control in (("Host", self.host), ("Port", self.port),
                                ("Digital In UID", self.digital_uid),
                                ("Dual Relay UID", self.output_uid)):
-            form.addRow(label, control)
+            form.addRow(self.ui.label(label), control)
         self.pulse_ms = QtWidgets.QSpinBox()
         self.pulse_ms.setRange(1, 5000)
-        self.pulse_ms.setToolTip("Time the selected relay closes its A contact for one joystick press.")
+        self.ui.bind(self.pulse_ms.setToolTip, "Time the selected relay closes its A contact for one joystick press.")
         self.release_ms = QtWidgets.QSpinBox()
         self.release_ms.setRange(1, 10000)
-        self.release_ms.setToolTip("Minimum time after release before the next press. Allow the axis to finish its nudge.")
+        self.ui.bind(self.release_ms.setToolTip, "Minimum time after release before the next press. Allow the axis to finish its nudge.")
         for label, field in (("Joystick press", self.pulse_ms), ("Release interval", self.release_ms)):
             field.setSuffix(" ms")
             field.setKeyboardTracking(False)
-            form.addRow(label, field)
-        form.addRow(QtWidgets.QLabel("Relay A0 → IN 1     ·     Relay A1 → IN 2"))
+            form.addRow(self.ui.label(label), field)
+        form.addRow(self.ui.label("Relay A0 → IN 1     ·     Relay A1 → IN 2"))
         layout.addWidget(connection)
 
-        inputs = QtWidgets.QGroupBox("Digital inputs")
+        inputs = self.ui.group("Digital inputs")
         form = QtWidgets.QFormLayout(inputs)
         self.left_channel = QtWidgets.QComboBox()
         self.right_channel = QtWidgets.QComboBox()
@@ -205,52 +228,52 @@ class MotionDock(QtWidgets.QDockWidget):
             control.addItem("Disabled", None)
             for channel in range(4):
                 control.addItem(f"Channel {channel}", channel)
-        self.reference_channel.setToolTip("Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
-        self.align_channel.setToolTip("Start direct X alignment on LOW → HIGH. Requires a live camera, a reference, and enabled movement.")
-        self.active_high = QtWidgets.QCheckBox("Joystick active high")
-        self.apply_inputs_button = QtWidgets.QPushButton("Apply digital inputs")
-        self.apply_inputs_button.setToolTip("Apply all channel assignments and joystick polarity together.")
-        self.inputs = QtWidgets.QLabel("0: —   1: —   2: —   3: —")
-        form.addRow("Left", self.left_channel)
-        form.addRow("Right", self.right_channel)
-        form.addRow("Reference capture", self.reference_channel)
-        form.addRow("Align X", self.align_channel)
+        self.ui.bind(self.reference_channel.setToolTip, "Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
+        self.ui.bind(self.align_channel.setToolTip, "Start direct X alignment on LOW → HIGH. Requires a live camera, a reference, and enabled movement.")
+        self.active_high = self.ui.check("Joystick active high")
+        self.apply_inputs_button = self.ui.button("Apply digital inputs")
+        self.ui.bind(self.apply_inputs_button.setToolTip, "Apply all channel assignments and joystick polarity together.")
+        self.inputs = self.ui.label("0: —   1: —   2: —   3: —")
+        form.addRow(self.ui.label("Left"), self.left_channel)
+        form.addRow(self.ui.label("Right"), self.right_channel)
+        form.addRow(self.ui.label("Reference capture"), self.reference_channel)
+        form.addRow(self.ui.label("Align X"), self.align_channel)
         form.addRow(self.active_high)
         form.addRow(self.apply_inputs_button)
-        hint = QtWidgets.QLabel("Reference and Align X trigger on LOW → HIGH. Release before pressing again.")
+        hint = self.ui.label("Reference and Align X trigger on LOW → HIGH. Release before pressing again.")
         hint.setWordWrap(True)
         form.addRow(hint)
-        form.addRow("Raw inputs", self.inputs)
+        form.addRow(self.ui.label("Raw inputs"), self.inputs)
         layout.addWidget(inputs)
 
-        jogging = QtWidgets.QGroupBox("Manual movement")
+        jogging = self.ui.group("Manual movement")
         form = QtWidgets.QFormLayout(jogging)
-        self.arm_button = QtWidgets.QPushButton("Enable joystick")
-        self.arm_button.setToolTip("Enable app movement with the joystick and arrow keys released.")
+        self.arm_button = self.ui.button("Enable joystick")
+        self.ui.bind(self.arm_button.setToolTip, "Enable app movement with the joystick and arrow keys released.")
         self.frequency = self._number(.1, 10, 1)
         self.frequency.setSuffix(" Hz")
         self.frequency.setSingleStep(.1)
-        form.addRow("Nudge repeat rate", self.frequency)
+        form.addRow(self.ui.label("Nudge repeat rate"), self.frequency)
         form.addRow(self.arm_button)
         layout.addWidget(jogging)
 
-        calibration = QtWidgets.QGroupBox("Pixel calibration")
+        calibration = self.ui.group("Pixel calibration")
         form = QtWidgets.QFormLayout(calibration)
-        self.pixel_scale = QtWidgets.QLabel("Pixels: not calibrated")
+        self.pixel_scale = self.ui.label("Pixels: not calibrated")
         self.pixel_scale.setWordWrap(True)
         self.test_presses = QtWidgets.QSpinBox()
         self.test_presses.setRange(-1000000, 1000000)
         self.test_presses.setKeyboardTracking(False)
-        self.test_presses.setToolTip("Number of joystick presses for calibration. Positive sends right relay pulses and negative sends left relay pulses.")
+        self.ui.bind(self.test_presses.setToolTip, "Number of joystick presses for calibration. Positive sends right relay pulses and negative sends left relay pulses.")
         self.known_pixel_distance = self._number(-1e9, 1e9, 8)
         self.known_pixel_distance.setSuffix(" px")
-        self.known_pixel_distance.setToolTip("X movement for one right joystick press. Enter negative pixels if the image moves left.")
-        self.use_known_distance_button = QtWidgets.QPushButton("Use known distance")
-        self.use_known_distance_button.setToolTip("Save a measured displacement per right press for the live camera.")
+        self.ui.bind(self.known_pixel_distance.setToolTip, "X movement for one right joystick press. Enter negative pixels if the image moves left.")
+        self.use_known_distance_button = self.ui.button("Use known distance")
+        self.ui.bind(self.use_known_distance_button.setToolTip, "Save a measured displacement per right press for the live camera.")
         form.addRow(self.pixel_scale)
-        form.addRow("Known X / right press", self.known_pixel_distance)
+        form.addRow(self.ui.label("Known X / right press"), self.known_pixel_distance)
         form.addRow(self.use_known_distance_button)
-        form.addRow("Test presses (+ right / − left)", self.test_presses)
+        form.addRow(self.ui.label("Test presses (+ right / − left)"), self.test_presses)
         layout.addWidget(calibration)
         layout.addStretch()
         scroll = QtWidgets.QScrollArea()
@@ -269,8 +292,18 @@ class MotionDock(QtWidgets.QDockWidget):
         self.arm_button.clicked.connect(self.arm_requested)
         self.use_known_distance_button.clicked.connect(
             lambda: self.known_distance_requested.emit(self.known_pixel_distance.value()))
+        self.ui.changed.connect(self._translate_channels)
+        self._translate_channels()
         self.set_config(self._config)
         self.set_connected(False)
+
+    def _translate_channels(self):
+        for control in (self.left_channel, self.right_channel, self.reference_channel, self.align_channel):
+            with QtCore.QSignalBlocker(control):
+                for index in range(control.count()):
+                    channel = control.itemData(index)
+                    text = self.ui.text("Disabled") if channel is None else self.ui.text("Channel {}", channel)
+                    control.setItemText(index, text)
 
     @staticmethod
     def _number(low, high, decimals):
@@ -330,7 +363,10 @@ class MotionDock(QtWidgets.QDockWidget):
             self.frequency.setValue(config.repeat_hz)
             self.test_presses.setValue(config.calibration_presses)
             scale = config.pixels_per_right_press
-            self.pixel_scale.setText(f"Pixels: {scale:+.6g} px / right press" if scale is not None else "Pixels: not calibrated")
+            if scale is None:
+                self.ui.bind(self.pixel_scale.setText, "Pixels: not calibrated")
+            else:
+                self.ui.bind(self.pixel_scale.setText, "Pixels: {:+.6g} px / right press", scale)
             self.known_pixel_distance.setValue(scale or 0.)
         finally:
             self._syncing = False
@@ -370,7 +406,7 @@ class MotionDock(QtWidgets.QDockWidget):
         # Set each action's final state once. Temporarily disabling a button
         # during a refresh cancels a mouse press before its release arrives.
         self._display_connection(status.connected)
-        self.inputs.setText("   ".join(f"{i}: {'HIGH' if value else 'low'}" for i, value in enumerate(status.inputs4))
+        self.ui.bind(self.inputs.setText, "   ".join(f"{i}: {'HIGH' if value else 'low'}" for i, value in enumerate(status.inputs4))
                             if self._config.digital_uid else "Digital In monitor disabled")
         idle = not status.busy and status.phase in ("idle", "ready", "aligned", "stopped")
         self.arm_button.setEnabled(status.connected and not status.armed)

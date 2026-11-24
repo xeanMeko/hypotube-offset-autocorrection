@@ -21,6 +21,8 @@ def test_fresh_gui_startup(module_name, widget_name):
     script = textwrap.dedent(
         """
         import importlib
+        import os
+        from pathlib import Path
         import sys
 
         # Import the application module before Qt, as the console launcher does.
@@ -38,7 +40,8 @@ def test_fresh_gui_startup(module_name, widget_name):
                 pass
 
         widget = (widget_class("Startup") if sys.argv[2] == "ImagePane"
-                  else widget_class(motion_hardware=UnavailableHardware()))
+                  else widget_class(motion_hardware=UnavailableHardware(),
+                                    settings_path=Path(os.environ["XDG_CONFIG_HOME"]) / "startup.json"))
         widget.show()
         application.processEvents()
         widget.close()
@@ -70,12 +73,14 @@ def test_launcher_remembers_source_and_honors_command_line_overrides(arguments, 
     script = textwrap.dedent(
         """
         import json
+        import os
+        from pathlib import Path
         import sys
         from measure_shift import app
         from measure_shift.models import MatchConfig
         from measure_shift.storage import save_profile
 
-        path = app.default_settings_path()
+        path = Path(os.environ["XDG_CONFIG_HOME"]) / "startup.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         save_profile(path, MatchConfig(), 1, 1,
                      ui={"source_kind": "Basler", "device_id": "remembered-camera"})
@@ -89,7 +94,7 @@ def test_launcher_remembers_source_and_honors_command_line_overrides(arguments, 
                     def shutdown(self, timeout_s=2):
                         pass
 
-                super().__init__(motion_hardware=UnavailableHardware())
+                super().__init__(motion_hardware=UnavailableHardware(), settings_path=path)
 
             def start_source(self, kind, **kwargs):
                 print(json.dumps([kind, kwargs["identifier"]]), flush=True)

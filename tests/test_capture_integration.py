@@ -592,9 +592,9 @@ def test_eof_updates_alignment_state_and_disables_dead_camera_controls(window, m
     monkeypatch.setattr(app_module, "create_source", lambda *args, **kwargs: source)
     widget.start_source("Video", path="fake.avi", auto_reference=True)
     pump_until(application, widget, lambda: widget.last_pair is not None and widget.last_pair.result.usable)
-    assert widget.state.text() == "ALIGNED"
+    assert widget.state.text() == "AUSGERICHTET"
     assert widget.camera_controls["fps"].isEnabled()
     source.release.set()
-    pump_until(application, widget, lambda: widget.state.text() == "INPUT ENDED")
+    pump_until(application, widget, lambda: widget.state.text() == "QUELLE BEENDET")
     assert source.closed.is_set()
     assert all(not control.isEnabled() for control in widget.camera_controls.values())

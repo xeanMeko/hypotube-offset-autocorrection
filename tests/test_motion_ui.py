@@ -294,12 +294,12 @@ def test_main_calibration_button_uses_the_test_move_from_axis_settings(applicati
         assert requested == [1]
         window.motion_dock.test_presses.setValue(-250)
         assert window.motion_dock.config.calibration_presses == -250
-        assert "250 left relay" in window.motion_controls.calibrate_button.toolTip()
+        assert "250 Tastendrücke nach links" in window.motion_controls.calibrate_button.toolTip()
         window.motion_controls.calibrate_button.click()
         assert requested == [1, -250]
         window.motion_dock.test_presses.setValue(0)
         assert window.motion_dock.test_presses.value() == -250
-        assert "250 left relay" in window.motion_controls.calibrate_button.toolTip()
+        assert "250 Tastendrücke nach links" in window.motion_controls.calibrate_button.toolTip()
     finally:
         window.close()
         application.processEvents()
@@ -350,7 +350,7 @@ def test_main_axis_controls_work_with_settings_closed(application):
              timeout=3, required=True)
         assert controls.connect_button.isCheckable()
         assert controls.connect_button.isChecked()
-        assert controls.connect_button.text() == "Disconnect hardware"
+        assert controls.connect_button.text() == "Trennen"
         connected_size = controls.connect_button.size()
         assert connected_size.width() >= controls.connect_button.sizeHint().width()
         assert hardware.calls.count("connect") == 1
@@ -360,20 +360,20 @@ def test_main_axis_controls_work_with_settings_closed(application):
         assert not window.tools_button.visibleRegion().isEmpty()
         assert not controls.calibrate_button.isEnabled()  # No live camera.
         assert not controls.align_button.isEnabled()
-        assert "READY" in controls.status.text()
+        assert "BEREIT" in controls.status.text()
         releases = hardware.calls.count("release")
         controls.stop_button.click()
         pump(application, lambda: hardware.calls.count("release") > releases, timeout=3, required=True)
         controls.connect_button.click()
         pump(application, lambda: not window._motion_status.connected, timeout=3, required=True)
-        assert controls.connect_button.text() == "Connect hardware"
+        assert controls.connect_button.text() == "Verbinden"
         assert controls.connect_button.size() == connected_size
         assert not controls.connect_button.isChecked()
         assert not controls.stop_button.isEnabled()
         controls.connect_button.click()
         pump(application, lambda: window._motion_status.phase == "ready", timeout=3, required=True)
         assert controls.connect_button.isChecked()
-        assert controls.connect_button.text() == "Disconnect hardware"
+        assert controls.connect_button.text() == "Trennen"
         assert controls.connect_button.size() == connected_size
         assert hardware.calls.count("connect") == 2
         assert hardware.pulses == []
@@ -529,13 +529,13 @@ def test_known_pixel_distance_rejects_zero_and_requires_a_live_camera(applicatio
         before = window.motion_dock.config
         assert not window.motion_dock.use_known_distance_button.isEnabled()
         window._set_known_pixel_distance(20)
-        assert "live IDS or Basler camera" in window.notice.text()
+        assert "IDS- oder Basler-Kamera" in window.notice.text()
         assert window.motion_dock.config == before
         context = MotionContext(source_id="ids:known", source_kind="IDS", shape=(32, 48),
                                 config_id=window.config.config_id, connected=True)
         monkeypatch.setattr(window, "_axis_context", lambda: context)
         window._set_known_pixel_distance(0)
-        assert "nonzero" in window.notice.text()
+        assert "ungleich null" in window.notice.text()
         assert window.motion_dock.config == before
         assert not hardware.pulses
     finally:
@@ -635,7 +635,7 @@ def test_other_edits_and_status_sync_preserve_pending_input_mapping(application)
 def test_zero_calibration_reports_error_and_closing_joins_motion(axis_window, application):
     window, hardware = axis_window
     window._calibrate_motion(0)
-    assert "nonzero" in window.notice.text()
+    assert "ungleich null" in window.notice.text()
     window.close()
     assert not window.motion.is_alive()
     assert hardware.calls[-1] == "shutdown"
@@ -694,7 +694,7 @@ def test_real_app_relay_calibration_and_digital_alignment(
          timeout=5, required=True)
     assert window.motion_dock.config.pixels_per_right_press == pytest.approx(-3, abs=.2)
     assert window.motion_dock.config.calibration_source_id == "ids:serial:fake-serial"
-    assert "px / right press" in window.motion_dock.pixel_scale.text()
+    assert "px pro Tastendruck nach rechts" in window.motion_dock.pixel_scale.text()
     assert window.reference is saved_reference
     pump(application, timeout=.15)
     assert hardware.pulses == [(1, 80), (1, 80)]
@@ -725,7 +725,7 @@ def test_real_app_relay_calibration_and_digital_alignment(
     assert "X aligned" in window._motion_status.message, (window._motion_status, hardware.pulses)
     assert abs(window.last_pair.result.dx) <= window.tolerance.value()
     assert window.last_pair.result.dy > 2
-    assert window.state.text() == "OUTSIDE TOLERANCE"
+    assert window.state.text() == "AUSSER TOLERANZ"
     assert camera.freshen_count >= 4
     assert not window.motion_dock.isVisible()
 
@@ -810,7 +810,7 @@ def test_relay_settings_support_output_only_and_clear_scale_when_pulse_changes(a
     assert MotionConfig.from_dict(config.to_dict()) == config
     assert config.digital_uid == "" and config.pulse_ms == 140 and config.release_ms == 300
     dock.set_config(config)
-    assert "-2 px / right press" in dock.pixel_scale.text()
+    assert "-2 px pro Tastendruck nach rechts" in dock.pixel_scale.text()
     dock.pulse_ms.setValue(120)
     assert dock.config.pixels_per_right_press is None
     dock.close()

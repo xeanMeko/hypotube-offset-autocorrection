@@ -6,6 +6,9 @@ measures X/Y translation in native image pixels using phase
 correlation, with optional image analytics. The notebooks and sample images
 remain available.
 
+The interface opens in German. Choose **Einstellungen → Sprache → English** to
+switch immediately. The app remembers your choice for the next launch.
+
 For everyday operation, see the [German user manual (PDF)](docs/benutzerhandbuch-de.pdf).
 It assumes a configured camera and axis controller. Relay contacts request
 axis nudges, and digital inputs can trigger reference capture and X alignment.

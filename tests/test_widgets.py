@@ -56,7 +56,7 @@ def test_image_cursor_and_roi_use_native_row_column_coordinates(show_widget, qap
     pane._hover((point,))
     assert "x = 17" in pane.cursor.text()
     assert "y = 11" in pane.cursor.text()
-    assert "intensity = 39" in pane.cursor.text()
+    assert "Intensität = 39" in pane.cursor.text()
     emitted = []
     pane.region_changed.connect(emitted.append)
     pane.set_region(Region("rectangle", 10, 12, 25, 20))
@@ -157,7 +157,7 @@ def test_histogram_counts_and_correlation_curves_keep_signed_native_axes(show_wi
     np.testing.assert_array_equal(xs, snapshot.metrics["slice_x_native_px"])
     np.testing.assert_array_equal(ys, snapshot.arrays["correlation_horizontal"])
     assert xs.min() < 0 < xs.max()
-    assert "Reconstructed" in page.metrics.text()
+    assert "Rekonstruierte" in page.metrics.text()
     for key, rect_key in (("reconstructed_correlation", "correlation_rect_native_px"), ("peak_zoom", "peak_zoom_rect_native_px")):
         pane = page.views[key]
         expected = snapshot.metrics[rect_key]
@@ -171,9 +171,9 @@ def test_histogram_counts_and_correlation_curves_keep_signed_native_axes(show_wi
         for column in (x, x - 3):
             scene = pane.image.mapToScene(QtCore.QPointF(column + 0.5, y + 0.5))
             pane._hover((scene,))
-            assert f"column {column}, row {y}" in pane.cursor.text()
+            assert f"Spalte {column}, Zeile {y}" in pane.cursor.text()
             expected_intensity = f"{float(image[y, column]):.4g}"
-            assert f"intensity = {expected_intensity}" in pane.cursor.text()
+            assert f"Intensität = {expected_intensity}" in pane.cursor.text()
         assert "x = -3.000" in pane.cursor.text()
 
 
@@ -212,8 +212,8 @@ def test_correlation_display_transform_preserves_signed_data_and_cursor(show_wid
     row, column = np.unravel_index(np.argmin(raw), raw.shape)
     assert pane.image.image[row, column] == 0
     pane._hover((pane.image.mapToScene(QtCore.QPointF(column + 0.5, row + 0.5)),))
-    assert f"intensity = {float(raw[row, column]):.4g}" in pane.cursor.text()
-    assert "intensity = -" in pane.cursor.text()
+    assert f"Intensität = {float(raw[row, column]):.4g}" in pane.cursor.text()
+    assert "Intensität = -" in pane.cursor.text()
     for key, array in snapshot.arrays.items():
         np.testing.assert_array_equal(array, before[key])
         assert not array.flags.writeable

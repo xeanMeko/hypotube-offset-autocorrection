@@ -152,9 +152,9 @@ def test_queue_clear_waits_for_settling_cutoff():
         assert not source.flushes
         assert frames.read() == (None, 0)
         # This read started before settling completed and cannot be published.
-        remaining = cutoff - time.monotonic()
-        if remaining > 0:
-            threading.Event().wait(remaining)
+        # The wait timer and monotonic clock can have different resolutions on Windows.
+        while (remaining := cutoff - time.monotonic()) > 0:
+            time.sleep(remaining)
         gate.finish(22)
         source.reads.get(timeout=2).finish(33)  # first restarted frame is discarded
         source.reads.get(timeout=2).finish(44)

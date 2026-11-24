@@ -11,6 +11,8 @@ from PySide6 import QtWidgets
 from PySide6 import QtCore
 import pyqtgraph as pg
 
+from .analytics import TABS
+from .i18n import ChoiceBox, Language, Term
 from .models import DiagnosticSnapshot, Region
 
 pg.setConfigOptions(imageAxisOrder="row-major", antialias=False, background="#101820", foreground="#d7e2eb")
@@ -19,8 +21,9 @@ pg.setConfigOptions(imageAxisOrder="row-major", antialias=False, background="#10
 class MessageStatusBar(QtWidgets.QStatusBar):
     """Show temporary messages in a shared area without hiding other readouts."""
 
-    def __init__(self, fallback, parent=None):
+    def __init__(self, fallback, parent=None, language=None):
         super().__init__(parent)
+        self.ui = language or Language(parent=self)
         self.setSizeGripEnabled(False)
         self._fallback = fallback
         self._message = QtWidgets.QLabel()
@@ -35,16 +38,16 @@ class MessageStatusBar(QtWidgets.QStatusBar):
         self._message_timer.setSingleShot(True)
         self._message_timer.timeout.connect(self.clearMessage)
 
-    def showMessage(self, message, timeout=0):
+    def showMessage(self, message, timeout=0, *args):
         previous = self.currentMessage()
         self._message_timer.stop()
-        self._message.setText(message)
-        self._message.setToolTip(message)
+        self.ui.bind(self._message.setText, message, *args)
+        self.ui.bind(self._message.setToolTip, message, *args)
         self.message_area.setCurrentWidget(self._message if message else self._fallback)
         if message and timeout > 0:
             self._message_timer.start(timeout)
-        if message != previous:
-            self.messageChanged.emit(message)
+        if self.currentMessage() != previous:
+            self.messageChanged.emit(self.currentMessage())
 
     def clearMessage(self):
         self.showMessage("")
@@ -53,7 +56,87 @@ class MessageStatusBar(QtWidgets.QStatusBar):
         return self._message.text()
 
 
-class TimedPlotWidget(pg.PlotWidget):
+def interface_pixels(size):
+    scale = min(size.width() / 1920, size.height() / 1080)
+    return max(14, min(24, round(18 * scale)))
+
+
+class InterfacePlot(pg.PlotWidget):
+    """Use the widget's logical font size for text painted in the plot scene."""
+
+    def __init__(self, language, *, title=None):
+        super().__init__()
+        self.ui = language
+        self._title = title
+        self._axes = {}
+        self._menus_bound = False
+        self.ui.changed.connect(self.refresh_text)
+        self.refresh_text()
+
+    def axis_label(self, side, source, units=None):
+        if self._axes.get(side) == (source, units):
+            return
+        self._axes[side] = source, units
+        self._refresh_axis(side)
+
+    def _refresh_axis(self, side):
+        source, units = self._axes[side]
+        self.getAxis(side).setLabel(self.ui.text(source), units=units, **{"font-size": self._text_size()})
+
+    def _text_size(self):
+        pixels = self.font().pixelSize()
+        return f"{pixels if pixels > 0 else self.fontMetrics().height()}px"
+
+    def refresh_text(self):
+        for side in ("left", "bottom"):
+            self.getAxis(side).setStyle(tickFont=self.font())
+        for side in self._axes:
+            self._refresh_axis(side)
+        if self._title:
+            self.setTitle(self.ui.text(self._title), size=self._text_size())
+        legend = self.getPlotItem().legend
+        if legend:
+            legend.setLabelTextSize(self._text_size())
+            for sample, label in legend.items:
+                label.setText(self.ui.text(sample.item.name()), size=self._text_size())
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QtCore.QEvent.Type.FontChange and "_axes" in self.__dict__:
+            self.refresh_text()
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            # pyqtgraph creates these popup menus outside the widget hierarchy.
+            for menu in (self.getViewBox().menu, self.getPlotItem().ctrlMenu):
+                if menu is not None:
+                    menu.setFont(self.font())
+                    if not self._menus_bound:
+                        self._bind_menu(menu)
+            if not self._menus_bound:
+                for action in self.scene().contextMenu:
+                    self.ui.bind(action.setText, action.text())
+                self._menus_bound = True
+        super().mousePressEvent(event)
+
+    def _bind_menu(self, menu):
+        self.ui.bind(menu.setTitle, menu.title())
+        for action in menu.actions():
+            if action.menu():
+                self._bind_menu(action.menu())
+            elif isinstance(action, QtWidgets.QWidgetAction):
+                panel = action.defaultWidget()
+                if panel:
+                    if isinstance(panel, QtWidgets.QGroupBox):
+                        self.ui.bind(panel.setTitle, panel.title())
+                    for control in panel.findChildren(QtWidgets.QWidget):
+                        if isinstance(control, (QtWidgets.QAbstractButton, QtWidgets.QLabel)) and control.text():
+                            self.ui.bind(control.setText, control.text())
+            elif action.text():
+                self.ui.bind(action.setText, action.text())
+
+
+class TimedPlotWidget(InterfacePlot):
     def __init__(self, *args, **kwargs):
         self.last_paint_ms = 0.0
         super().__init__(*args, **kwargs)
@@ -68,24 +151,25 @@ class ImagePane(QtWidgets.QWidget):
     region_changed = QtCore.Signal(object)
     crosshair_moved = QtCore.Signal(object)
 
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, parent=None, language=None):
         super().__init__(parent)
+        self.ui = language or Language(parent=self)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.title = QtWidgets.QLabel(title)
+        self.title = self.ui.label(title)
         self.title.setObjectName("paneTitle")
         layout.addWidget(self.title)
-        self.plot = TimedPlotWidget()
+        self.plot = TimedPlotWidget(self.ui)
         self.plot.setMinimumSize(180, 160)
-        self.plot.setLabel("bottom", "x", units="px")
-        self.plot.setLabel("left", "y", units="px")
+        self.plot.axis_label("bottom", "x", units="px")
+        self.plot.axis_label("left", "y", units="px")
         self.view = self.plot.getViewBox()
         self.view.setAspectLocked(True)
         self.view.invertY(True)
         self.image = pg.ImageItem(axisOrder="row-major")
         self.plot.addItem(self.image)
         layout.addWidget(self.plot)
-        self.cursor = QtWidgets.QLabel("Scroll to zoom · drag to pan · right-click for view options")
+        self.cursor = self.ui.label("Scroll to zoom · drag to pan · right-click for view options")
         self.cursor.setObjectName("muted")
         layout.addWidget(self.cursor)
         self.array = None
@@ -239,8 +323,11 @@ class ImagePane(QtWidgets.QWidget):
         if 0 <= y < self.array.shape[0] and 0 <= x < self.array.shape[1]:
             value = self.array[y, x]
             text = np.array2string(value, precision=3) if np.ndim(value) else f"{float(value):.4g}"
-            coordinates = f"x = {x}   y = {y}" if self.image.transform().isIdentity() else f"x = {point.x():+.3f}   y = {point.y():+.3f}   [column {x}, row {y}]"
-            self.cursor.setText(f"{coordinates}   intensity = {text}")
+            if self.image.transform().isIdentity():
+                self.ui.bind(self.cursor.setText, "x = {}   y = {}   intensity = {}", x, y, text)
+                return
+            self.ui.bind(self.cursor.setText, "x = {:+.3f}   y = {:+.3f}   [column {}, row {}]   intensity = {}",
+                         point.x(), point.y(), x, y, text)
 
     def set_region(self, region: Region) -> None:
         if self.array is None and region.kind != "full":
@@ -307,14 +394,16 @@ class ImagePane(QtWidgets.QWidget):
 
 
 class AnalysisPage(QtWidgets.QWidget):
-    def __init__(self, tab: str):
+    def __init__(self, tab: str, language=None):
         super().__init__()
+        self.ui = language or Language(parent=self)
         self.tab = tab
         outer = QtWidgets.QVBoxLayout(self)
-        self.enabled = QtWidgets.QCheckBox("Enable this analysis")
+        self.enabled = self.ui.check("Enable this analysis")
         self.enabled.setChecked(True)
         outer.addWidget(self.enabled)
-        self.metrics = QtWidgets.QLabel("Enable Live analytics or capture a frozen pair to inspect this view.")
+        self.metrics = QtWidgets.QLabel()
+        self._empty_message = "Enable Live analytics or capture a frozen pair to inspect this view."
         self.metrics.setWordWrap(True)
         self.metrics.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         outer.addWidget(self.metrics)
@@ -328,6 +417,8 @@ class AnalysisPage(QtWidgets.QWidget):
         self.snapshot = None
         self.line_roi = None
         self.profile = None
+        self.ui.changed.connect(self._refresh_metrics)
+        self._refresh_metrics()
         self._columns = 0
         self.scroll.viewport().installEventFilter(self)
 
@@ -371,10 +462,14 @@ class AnalysisPage(QtWidgets.QWidget):
             child = self.grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        self.metrics.setText("Analytics paused. No diagnostic arrays retained in this view.")
+        self._empty_message = "Analytics paused. No diagnostic arrays retained in this view."
+        self._refresh_metrics()
 
-    def display(self, snapshot: DiagnosticSnapshot) -> None:
-        self.snapshot = snapshot
+    def _refresh_metrics(self):
+        snapshot = self.snapshot
+        if snapshot is None:
+            self.metrics.setText(self.ui.text(self._empty_message))
+            return
         pair, result = snapshot.pair, snapshot.pair.result
         values = []
         for key, value in snapshot.metrics.items():
@@ -382,33 +477,42 @@ class AnalysisPage(QtWidgets.QWidget):
                 continue
             if isinstance(value, float):
                 value = f"{value:.5g}"
-            values.append(f"{key.replace('_', ' ')}: {value}")
-        provenance = f"Frame {pair.frame.frame_id[:8]} · reference {pair.reference.reference_id[:8]} · captured {time.strftime('%H:%M:%S', time.localtime(pair.frame.captured_at))} · analysis scale {pair.config.scale:g}"
-        actual = f"Measured displacement: ({result.dx:+.3f}, {result.dy:+.3f}) px · response {result.response:.4f} · {result.validity}"
+            elif isinstance(value, str) and key not in ("reference_id", "frame_id", "config_id"):
+                value = self.ui.text(value)
+            values.append(f"{self.ui.text(key.replace('_', ' '))}: {value}")
+        provenance = self.ui.text("Frame {} · reference {} · captured {} · analysis scale {:g}",
+                                  pair.frame.frame_id[:8], pair.reference.reference_id[:8],
+                                  time.strftime("%H:%M:%S", time.localtime(pair.frame.captured_at)), pair.config.scale)
+        actual = self.ui.text("Measured displacement: ({:+.3f}, {:+.3f}) px · response {:.4f} · {}",
+                              result.dx, result.dy, result.response, Term(result.validity))
         self.metrics.setText(provenance + "\n" + actual + "\n" + "  |  ".join(values))
+
+    def display(self, snapshot: DiagnosticSnapshot) -> None:
+        self.snapshot = snapshot
+        result = snapshot.pair.result
         arrays = {key: value for key, value in snapshot.arrays.items() if isinstance(value, np.ndarray) and value.ndim in (1, 2, 3)}
         if list(self.views) != list(arrays):
             # Keep only the active module's arrays and widgets.
             self.clear()
             self.snapshot = snapshot
-            self.metrics.setText(provenance + "\n" + actual + "\n" + "  |  ".join(values))
             for key, array in arrays.items():
                 title = key.replace('_', ' ').capitalize()
                 if array.ndim == 1:
-                    widget = pg.PlotWidget(title=title)
+                    widget = InterfacePlot(self.ui, title=title)
                     widget.setMinimumHeight(200)
                     widget.showGrid(x=True, y=True, alpha=0.2)
-                    widget.setLabel("left", "Value")
-                    widget.setLabel("bottom", "Sample")
+                    widget.axis_label("left", "Value")
+                    widget.axis_label("bottom", "Sample")
                     curve = widget.plot(pen=pg.mkPen("#69dfb7", width=2))
                     self.views[key] = (widget, curve)
                 else:
-                    widget = ImagePane(title)
+                    widget = ImagePane(title, language=self.ui)
                     widget.setMinimumHeight(280)
                     widget.cursor.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed)
-                    widget.cursor.setToolTip(widget.cursor.text())
+                    self.ui.bind(widget.cursor.setToolTip, "Scroll to zoom · drag to pan · right-click for view options")
                     self.views[key] = widget
             self._layout_views(force=True)
+        self._refresh_metrics()
         for key, array in arrays.items():
             view = self.views[key]
             if isinstance(view, tuple):
@@ -417,10 +521,10 @@ class AnalysisPage(QtWidgets.QWidget):
                 axis = snapshot.metrics.get(axis_key)
                 if axis is not None and len(axis) == array.size:
                     curve.setData(np.asarray(axis), array)
-                    widget.setLabel("bottom", "Displacement", units="px")
+                    widget.axis_label("bottom", "Displacement", units="px")
                 else:
                     curve.setData(array)
-                    widget.setLabel("bottom", "Intensity" if "histogram" in key else "Sample")
+                    widget.axis_label("bottom", "Intensity" if "histogram" in key else "Sample")
             else:
                 color = any(token in key for token in ("magnitude", "phase", "correlation", "difference", "centered"))
                 is_map = key in ("reconstructed_correlation", "peak_zoom")
@@ -434,11 +538,11 @@ class AnalysisPage(QtWidgets.QWidget):
                         view.view.autoRange(padding=.03)
                         view._signed_rect_initialized = True
                 if "phase" in key or "magnitude" in key or "spectrum" in key:
-                    view.plot.setLabel("bottom", "Frequency bin u")
-                    view.plot.setLabel("left", "Frequency bin v")
+                    view.plot.axis_label("bottom", "Frequency bin u")
+                    view.plot.axis_label("left", "Frequency bin v")
                 if key in ("reconstructed_correlation", "peak_zoom"):
-                    view.plot.setLabel("bottom", "Displacement x", units="px")
-                    view.plot.setLabel("left", "Displacement y", units="px")
+                    view.plot.axis_label("bottom", "Displacement x", units="px")
+                    view.plot.axis_label("left", "Displacement y", units="px")
                     view.clear_annotations()
                     integer_peak = pg.ScatterPlotItem([snapshot.metrics["reconstructed_integer_peak_dx_px"]],
                         [snapshot.metrics["reconstructed_integer_peak_dy_px"]], symbol="o", size=13,
@@ -448,8 +552,9 @@ class AnalysisPage(QtWidgets.QWidget):
                     for marker in (integer_peak, measured):
                         view.plot.addItem(marker)
                         view.annotations.append(marker)
-                    view.cursor.setText("Positive correlation shown with power scale 0.35 · cursor and slices retain raw signed values · cyan + measured shift")
-                    view.cursor.setToolTip(view.cursor.text())
+                    hint = ("Positive correlation shown with power scale 0.35 · cursor and slices retain raw signed values · cyan + measured shift")
+                    self.ui.bind(view.cursor.setText, hint)
+                    self.ui.bind(view.cursor.setToolTip, hint)
         if self.tab == "Image":
             self._add_line_inspector()
 
@@ -463,13 +568,14 @@ class AnalysisPage(QtWidgets.QWidget):
             h, w = self.snapshot.pair.frame.shape
             self.line_roi = pg.LineSegmentROI([(w * .25, h * .5), (w * .75, h * .5)], pen=pg.mkPen("#ffcd66", width=2))
             panes[-1].plot.addItem(self.line_roi)
-            self.profile = pg.PlotWidget(title="Draw the yellow line to inspect intensity across a feature")
+            self.profile = InterfacePlot(self.ui, title="Draw the yellow line to inspect intensity across a feature")
             self.profile.setMinimumHeight(220)
             self.profile.addLegend()
-            self.profile.setLabel("bottom", "Distance along line", units="px")
-            self.profile.setLabel("left", "Intensity (0–255)")
+            self.profile.axis_label("bottom", "Distance along line", units="px")
+            self.profile.axis_label("left", "Intensity (0–255)")
             self.profile_ref = self.profile.plot(name="Reference", pen=pg.mkPen("#ff7979", width=2))
             self.profile_live = self.profile.plot(name="Current", pen=pg.mkPen("#62d4ef", width=2))
+            self.profile.refresh_text()
             self._layout_views(force=True)
             self.line_roi.sigRegionChanged.connect(self._update_line)
         self._update_line()
@@ -497,28 +603,30 @@ class AnalyticsDock(QtWidgets.QDockWidget):
     capture_requested = QtCore.Signal()
     export_requested = QtCore.Signal()
 
-    def __init__(self, parent=None):
-        super().__init__("Image analytics", parent)
+    def __init__(self, parent=None, language=None):
+        super().__init__(parent)
+        self.ui = language or Language(parent=self)
+        self.ui.bind(self.setWindowTitle, "Image analytics")
+        self._font_size = None
         self.setObjectName("analyticsDock")
         self.setAllowedAreas(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea | QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
         content = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content)
         controls = QtWidgets.QHBoxLayout()
-        self.mode = QtWidgets.QComboBox()
-        self.mode.addItems(["Off", "Live", "Frozen"])
+        self.mode = ChoiceBox(self.ui, ["Off", "Live", "Frozen"])
         self.rate = QtWidgets.QDoubleSpinBox()
         self.rate.setRange(.1, 10)
         self.rate.setSingleStep(.5)
         self.rate.setValue(1)
         self.rate.setSuffix(" Hz")
-        self.capture = QtWidgets.QPushButton("Capture pair")
-        self.export = QtWidgets.QPushButton("Export inspection…")
-        self.maximize = QtWidgets.QPushButton("Maximize")
-        self.maximize.setToolTip("Expand analytics into a separate, freely resizable window")
-        self.redock = QtWidgets.QPushButton("Dock")
-        self.redock.setToolTip("Return analytics to the main window")
+        self.capture = self.ui.button("Capture pair")
+        self.export = self.ui.button("Export inspection…")
+        self.maximize = self.ui.button("Maximize")
+        self.ui.bind(self.maximize.setToolTip, "Expand analytics into a separate, freely resizable window")
+        self.redock = self.ui.button("Dock")
+        self.ui.bind(self.redock.setToolTip, "Return analytics to the main window")
         self.redock.setVisible(self.isFloating() and parent is not None)
-        controls.addWidget(QtWidgets.QLabel("Analytics"))
+        controls.addWidget(self.ui.label("Analytics"))
         controls.addWidget(self.mode)
         controls.addWidget(self.rate)
         controls.addWidget(self.capture)
@@ -529,13 +637,13 @@ class AnalyticsDock(QtWidgets.QDockWidget):
         layout.addLayout(controls)
         self.tabs = QtWidgets.QTabWidget()
         self.pages = {}
-        for tab in ("Image", "Preprocessing", "Fourier", "Correlation", "Alignment", "Performance"):
-            page = AnalysisPage(tab)
+        for tab in TABS:
+            page = AnalysisPage(tab, self.ui)
             self.pages[tab] = page
-            self.tabs.addTab(page, tab)
+            self.tabs.addTab(page, self.ui.text(tab))
             page.enabled.toggled.connect(self.changed)
         layout.addWidget(self.tabs)
-        self.status = QtWidgets.QLabel("Off · live alignment keeps running")
+        self.status = self.ui.label("Off · live alignment keeps running")
         layout.addWidget(self.status)
         self.setWidget(content)
         self.mode.currentIndexChanged.connect(self.changed)
@@ -547,7 +655,23 @@ class AnalyticsDock(QtWidgets.QDockWidget):
         self.redock.clicked.connect(self._redock)
         self.topLevelChanged.connect(self.redock.setVisible)
         self.visibilityChanged.connect(self.changed)
+        self.ui.changed.connect(self._translate_tabs)
+        self.topLevelChanged.connect(self.refresh_font)
         self._previous_tab = self.current_tab
+
+    def _translate_tabs(self):
+        for index, key in enumerate(self.pages):
+            self.tabs.setTabText(index, self.ui.text(key))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refresh_font()
+
+    def refresh_font(self):
+        size = interface_pixels(self.size()) if self.isFloating() or self.parentWidget() is None else None
+        if size != self._font_size:
+            self._font_size = size
+            self.setStyleSheet(f"QWidget {{ font-size: {size}px; }}" if size else "")
 
     def _toggle_maximized(self) -> None:
         if self.isMaximized():
@@ -563,15 +687,15 @@ class AnalyticsDock(QtWidgets.QDockWidget):
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QtCore.QEvent.Type.WindowStateChange:
-            self.maximize.setText("Restore" if self.isMaximized() else "Maximize")
+            self.ui.bind(self.maximize.setText, "Restore" if self.isMaximized() else "Maximize")
 
     @property
     def current_tab(self) -> str:
-        return self.tabs.tabText(self.tabs.currentIndex())
+        return self.tabs.currentWidget().tab
 
     @property
     def active(self) -> bool:
-        return self.isVisible() and self.mode.currentText() != "Off" and self.pages[self.current_tab].enabled.isChecked()
+        return self.isVisible() and self.mode.currentData() != "Off" and self.pages[self.current_tab].enabled.isChecked()
 
     def _tab_changed(self) -> None:
         if self._previous_tab in self.pages:

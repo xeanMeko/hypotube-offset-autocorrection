@@ -158,7 +158,7 @@ def test_zoom_links_populated_image_views(window, qt_application, source_name, t
 @pytest.mark.parametrize("source_name", ["reference_pane", "live_pane"])
 def test_crosshair_click_links_views_without_changing_roi(window, qt_application, source_name):
     start_demo(window, qt_application)
-    window.area.setCurrentText("Rectangle")
+    window.area.select("Rectangle")
     wait_current_config(window, qt_application)
     window.pause_action.setChecked(True)
     window._fit_images()
@@ -191,11 +191,11 @@ def test_demo_reference_roi_and_display_scale_workflow(window, qt_application, d
     window.capture_reference()
     wait_current_config(window, qt_application)
     assert window.reference.reference_id != original_reference
-    window.area.setCurrentText("Circle")
+    window.area.select("Circle")
     wait_current_config(window, qt_application)
     assert window.config.region.kind == "circle"
     assert window.reference_pane._region == window.config.region
-    window.area.setCurrentText("Rectangle")
+    window.area.select("Rectangle")
     wait_current_config(window, qt_application)
     assert window.config.method == "phase"
     assert window.config.region.kind == "rectangle"
@@ -235,7 +235,7 @@ def test_live_frozen_and_off_analytics_keep_explicit_pair_provenance(window, qt_
     pump_until(qt_application, lambda: window.last_pair.frame.frame_id != frozen.frame.frame_id)
     assert window.frozen_pair is frozen
     np.testing.assert_array_equal(frozen.frame.pixels, frozen_pixels)
-    window.dock.mode.setCurrentText("Off")
+    window.dock.mode.select("Off")
     jobs_completed = window.analytics.jobs_completed
     pump_for(qt_application, 0.12)
     assert window.last_diagnostic is None
@@ -243,7 +243,7 @@ def test_live_frozen_and_off_analytics_keep_explicit_pair_provenance(window, qt_
     assert window.analytics.jobs_completed == jobs_completed
     assert all(page.snapshot is None for page in window.dock.pages.values())
     # A new configuration must produce fresh provenance when diagnostics resume.
-    window.area.setCurrentText("Rectangle")
+    window.area.select("Rectangle")
     wait_current_config(window, qt_application)
     window.dock.mode.setCurrentText("Live")
     pump_until(qt_application, lambda: window.last_diagnostic is not None and
@@ -257,7 +257,7 @@ def test_pause_preserves_display_while_capture_continues_then_resumes(window, qt
     paused_display = window.live_pane.array.copy()
     pump_until(qt_application, lambda: window.latest_frame.frame_id != paused_pair.frame.frame_id)
     pump_for(qt_application, 0.08)
-    assert window.state.text() == "PAUSED"
+    assert window.state.text() == "PAUSIERT"
     assert window.last_pair is paused_pair
     np.testing.assert_array_equal(window.live_pane.array, paused_display)
     displayed = window._displayed_frame
@@ -268,12 +268,12 @@ def test_pause_preserves_display_while_capture_continues_then_resumes(window, qt
     window.pause_action.setChecked(False)
     pump_until(qt_application, lambda: window.last_pair is not None and
                window.last_pair.frame.frame_id != paused_pair.frame.frame_id)
-    assert window.state.text() != "PAUSED"
+    assert window.state.text() != "PAUSIERT"
 
 
 def test_geometry_change_discards_reference_and_visible_old_measurement(window, qt_application):
     start_demo(window, qt_application)
-    window.area.setCurrentText("Circle")
+    window.area.select("Circle")
     wait_current_config(window, qt_application)
     window.capture_worker.stop()
     window.capture_worker.join(timeout=2)
@@ -286,12 +286,12 @@ def test_geometry_change_discards_reference_and_visible_old_measurement(window, 
     assert window.config.region.kind == "full"
     assert "—" in window.x_value.text()
     assert "—" in window.y_value.text()
-    assert "geometry changed" in window.notice.text().lower()
+    assert "Bildgröße hat sich geändert" in window.notice.text()
 
 
 def test_live_compensated_preview_is_eventually_rendered_and_matches_its_pair(window, qt_application):
     start_demo(window, qt_application)
-    window.view_mode.setCurrentText("Compensated preview")
+    window.view_mode.select("Compensated preview")
     pump_until(qt_application, lambda: window.live_pane.array.ndim == 3)
     # Stop measurement changes while allowing the GUI/preview worker to run,
     # then verify that the displayed native array belongs to that exact pair.
@@ -324,7 +324,7 @@ def test_frozen_inspector_rejects_wrong_frame_even_with_same_reference_and_confi
     window.last_pair = pair
     window.dock.tabs.setCurrentIndex(5)
     window.dock.show()
-    window.dock.mode.setCurrentText("Frozen")
+    window.dock.mode.select("Frozen")
     assert window.frozen_pair is pair
     wrong_snapshot = DiagnosticSnapshot(foreign, "Performance")
     window.analytics.output.publish(AnalysisOutput(window.analytics.generation, snapshot=wrong_snapshot))
