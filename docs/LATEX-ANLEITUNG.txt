@@ -4,7 +4,9 @@ Bearbeiten
 ----------
 Die Hauptdatei ist benutzerhandbuch-de.tex. Sie enthält den vollständigen
 deutschen Text sowie die Formatierung. Die Bildschirmabbildung liegt unter
-assets/bedienoberflaeche.png. Beide Dateien müssen zusammenbleiben.
+assets/bedienoberflaeche.png und der Verdrahtungsplan unter
+tinkerforge-wiring.drawio.png. Lassen Sie die Abbildungen beim Kompilieren
+an diesen relativen Pfaden zur Hauptdatei.
 
 Die Anleitung setzt eine eingerichtete Kamera, eine betriebsbereite Motorachse
 und aktivierte Joystick-Funktionen für Referenz und Ausrichten voraus. Der

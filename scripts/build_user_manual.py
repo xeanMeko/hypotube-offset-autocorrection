@@ -17,7 +17,12 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 NAME = "benutzerhandbuch-de"
-SOURCES = [f"{NAME}.tex", "assets/bedienoberflaeche.png", "LATEX-ANLEITUNG.txt"]
+SOURCES = [
+    f"{NAME}.tex",
+    "assets/bedienoberflaeche.png",
+    "tinkerforge-wiring.drawio.png",
+    "LATEX-ANLEITUNG.txt",
+]
 
 
 def main():

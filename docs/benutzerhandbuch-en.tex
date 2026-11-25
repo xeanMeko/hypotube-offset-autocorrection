@@ -37,7 +37,7 @@
 \fancyhf{}
 \fancyhead[L]{\small Measure Shift}
 \fancyhead[R]{\small User manual}
-\fancyfoot[L]{\small Edition: 16 November 2026}
+\fancyfoot[L]{\small Edition 23 November 2026}
 \fancyfoot[R]{\small Page \thepage\ of \pageref*{LastPage}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0.4pt}
@@ -58,11 +58,40 @@
   {\large Image alignment with the joystick\par}
 \end{center}
 
-\section{Prerequisites and controls}
+\setcounter{tocdepth}{2}
+\tableofcontents
+\clearpage
 
-This manual assumes a live camera, a configured axis controller, and enabled
-joystick functions. The axis controller determines the travel for each
-relay press. Set the required image tolerance in the application.
+\section{Getting started}
+
+\subsection{Before starting}
+
+\begin{itemize}
+  \item Connect the IDS camera to the PC. Verify that the IDS camera software
+  detects it and can display a live image, then close the IDS viewer.
+  \item Connect the Tinkerforge Master Brick to the PC via USB and make sure
+  the axis controller is ready. For the external machine wiring diagram,
+  see Section~\ref{sec:wiring}.
+\end{itemize}
+
+\subsection{Starting Measure Shift}
+
+\begin{enumerate}
+  \item Double-click \texttt{measure-shift}. If prompted for administrator
+  approval, enter the requested password. This grants USB access to the
+  Tinkerforge Master Brick.
+  \item If the live image is missing, select \textbf{IDS} and choose your camera
+  in the toolbar, then click \textbf{Connect / Open}.
+  \item If the joystick does not respond and the hardware is disconnected,
+  click \textbf{Connect hardware}. If \textbf{Enable joystick} appears,
+  release the joystick and click it. See Section~\ref{sec:connection-issues}
+  if the connection still fails.
+\end{enumerate}
+
+\subsection{Controls}
+
+The axis controller determines the travel for each relay press. Set the
+required image tolerance in the application.
 
 \begin{tabularx}{\linewidth}{@{}L{0.28\linewidth}Y@{}}
 \toprule
@@ -78,6 +107,7 @@ Joystick left/right & Move the motor axis in steps. Holding the joystick repeats
 These names refer to the functions assigned to the joystick. The exact button
 positions depend on your setup.
 
+\newpage
 \section{Operating procedure}
 
 \begin{enumerate}
@@ -101,6 +131,24 @@ positions depend on your setup.
   The overall status \Status{ALIGNED} confirms that the image displacement
   is within the configured tolerance.
 \end{enumerate}
+
+\subsection{How Align X works}
+
+\begin{description}
+  \item[Measure.] OpenCV phase correlation compares the live image with the
+  saved reference and estimates the shift in pixels along X ($d_x$) and
+  Y ($d_y$). It uses the full image by default or a selected analysis region.
+  The app checks image texture, match strength, and overlap.
+  \item[Move.] If X is outside tolerance, the controller starts with one fixed
+  right nudge. It waits for the motion to settle, then measures a fresh frame.
+  It continues in the same direction as the absolute X error shrinks and
+  reverses if the error grows or the sample crosses the target. This works
+  without a pixels-per-nudge calibration.
+  \item[Stop.] Three fresh, valid frames in a row with X within tolerance
+  confirm \Status{X aligned}. The search also stops after four nudges without
+  a new best X error or when it detects that one nudge is too coarse for the
+  requested tolerance. The app reports both X and Y and moves only the X axis.
+\end{description}
 
 \newpage
 \section{Monitoring the screen}
@@ -183,7 +231,8 @@ single attempt. Wait for the current operation to finish before pressing it agai
 \subsection{Measuring displacement per press}
 
 \textbf{Run pixel calibration} reports an optional measurement in pixels per
-right press. In \textbf{Motion Setup}, set \textbf{Test presses} to a positive
+right press. In \textbf{Motion Setup} (see Section~\ref{sec:motion-setup}),
+set \textbf{Test presses} to a positive
 number for right nudges or a negative number for left nudges. Keep the feature
 visible throughout the test. The part stays at the final position.
 
@@ -196,7 +245,66 @@ in its neutral position before moving again or pressing the \AlignButton{}.
 Releasing the align button alone does not cancel an operation in progress.
 
 \newpage
+\section{Motion Setup}
+\label{sec:motion-setup}
+
+Open \textbf{Tools} $\rightarrow$ \textbf{Motion Setup} to show the settings
+panel. Wait for the axis to stop before editing. Applying a change cancels any
+pending or running calibration or automatic alignment. Connection and timing
+settings, repeat rate, and test count are applied as you finish editing them.
+
+\subsection{External machine wiring}
+\label{sec:wiring}
+
+\begin{center}
+  \includegraphics[width=\linewidth]{tinkerforge-wiring.drawio.png}
+  \par\smallskip
+  {\small\textbf{Figure 2:} Connections between the joystick, Tinkerforge
+  Bricklets, and machine controller.}
+\end{center}
+
+\subsection{Bricklet connection}
+
+Click \textbf{Disconnect hardware} before changing the connection settings.
+Enter the Brick Daemon \textbf{Host} and \textbf{Port} (defaults
+\texttt{localhost} and \texttt{4223}) and the \textbf{Dual Relay UID}. Leave
+\textbf{Digital In UID} blank for operation without physical joystick inputs.
+Click \textbf{Connect hardware} when the connection settings are ready.
+
+\textbf{Joystick press} sets how long the relay contact closes (default 80~ms).
+\textbf{Release interval} sets the minimum pause after it opens (default
+100~ms). Allow enough time for the controller to finish each nudge.
+
+\newpage
+\subsection{Digital inputs and manual movement}
+
+Assign separate input channels (0--3) to \textbf{Left}, \textbf{Right},
+\textbf{Reference capture}, and \textbf{Align X}. The defaults are 2, 1, 0,
+and 3 respectively. Set either of the last two to \textbf{Disabled} to turn
+off that trigger. With \textbf{Joystick active high} checked, HIGH means the
+direction is pressed. Clear it for active-low directions. Reference capture
+and Align X always trigger when the input goes from LOW to HIGH.
+Click \textbf{Apply digital inputs} to commit the assignments and polarity
+together. \textbf{Raw inputs} shows the current levels for checking the wiring.
+
+\textbf{Nudge repeat rate} caps how often nudges repeat while a direction or
+arrow key is held (default 2~Hz). When connected and movement is disabled,
+release all directions and click \textbf{Enable joystick} to enable movement.
+
+\subsection{Pixel calibration}
+
+Set \textbf{Test presses} to a nonzero count for \textbf{Run pixel calibration}
+on the toolbar. Positive counts move right and negative counts move left.
+If you already know the signed X displacement for one right press, enter it in
+\textbf{Known X / right press} and click \textbf{Use known distance} with a live
+camera and the axis idle. Enter a negative value if a right press moves the image
+left. The \textbf{Pixels} readout shows the saved value for the camera. Direct
+X alignment measures the image after each nudge and works without calibration.
+
+\newpage
 \section{Status messages and troubleshooting}
+
+\subsection{Reading the status messages}
 
 The measurement display and the axis message describe different states.
 Check both indicators if an operation is interrupted.
@@ -220,6 +328,28 @@ Check both indicators if an operation is interrupted.
 \Status{DISCONNECTED} / \Status{STALE MEASUREMENT} & The connection or a current camera image is missing. Do not confirm alignment using these measurements. Have the connection and setup checked. \\
 \bottomrule
 \end{tabularx}
+
+\newpage
+\subsection{IDS camera missing or no live image}
+
+Try opening the camera in \textbf{uEye Demo}, \textbf{uEye Cockpit}, or
+\textbf{IDS peak Cockpit}, depending on the software installed for your camera.
+If it fails there too, check the camera cable and power and look for the camera
+in \textbf{IDS Camera Manager}. If a GigE uEye camera appears there with a
+network configuration warning, select it and
+run \textbf{Automatic ETH configuration}. See the
+\href{https://www.1stvision.com/cameras/IDS/IDS-manuals/uEye_Manual/hw_gige_cameramanager.html}{IDS guide to GigE configuration}.
+Once the IDS viewer shows a live image, close it and retry
+\textbf{Connect / Open} in Measure Shift.
+
+\subsection{Master Brick connection fails}
+\label{sec:connection-issues}
+
+Check the Master Brick's USB cable and click \textbf{Connect hardware} again.
+If offered, select \textbf{Enable Master Brick access} and approve the USB
+permission request. If the connection still fails, unplug and reconnect the
+Master Brick, then retry. Check the Brick Daemon address and Bricklet UIDs in
+\textbf{Motion Setup} (Section~\ref{sec:motion-setup}) if the error persists.
 
 \subsection{A button does not respond}
 
