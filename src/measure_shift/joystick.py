@@ -23,6 +23,7 @@ class JoystickState:
     busy: bool = False
     fault: str | None = None
     timeout_s: float = 5.0
+    alignment_contact_confirmed: bool = False
 
 
 class JoystickPort(Protocol):
@@ -49,6 +50,17 @@ RELAY_FOR_INPUT = {1: 0, 2: 1}
 INPUT_DEBOUNCE_S = .03
 
 
+@dataclass
+class _AlignmentPulse:
+    direction: Direction
+    channel: int
+    opposite_channel: int
+    active_high: bool
+    confirmation_deadline: float
+    confirmed: bool = False
+    dispatched: bool = False
+
+
 class WiredJoystick:
     """Send bounded relay presses and mask them from operator input."""
 
@@ -60,6 +72,8 @@ class WiredJoystick:
         self._clock = clock
         self._stop_requested = stop_requested
         self._bench = None
+        self._alignment: _AlignmentPulse | None = None
+        self._alignment_fault: str | None = None
         self.raw_inputs = (False,) * 4
         self._echo_channel: int | None = None
         self._contact_held = False
@@ -75,6 +89,11 @@ class WiredJoystick:
         self.raw_inputs = tuple(levels)
         if not cfg.digital_uid:
             levels[cfg.left_channel] = levels[cfg.right_channel] = not cfg.active_high
+        if self._alignment is not None:
+            pulse = self._alignment
+            self._observe_alignment(levels)
+            levels[pulse.channel] = not pulse.active_high
+            return tuple(levels)
         channel = self._echo_channel
         if channel is not None:
             # During a pulse the shared input can confirm a release, but it
@@ -91,7 +110,12 @@ class WiredJoystick:
         cfg = self._config()
         timeout = (cfg.pulse_ms + cfg.release_ms) / 1000 + 5.
         motor = self._bench.read_state() if self._bench is not None else JoystickState()
-        return JoystickState(busy=motor.busy or self._clock() < self._ready_at, fault=motor.fault, timeout_s=timeout)
+        pulse = self._alignment
+        return JoystickState(
+            busy=motor.busy or pulse is not None or self._clock() < self._ready_at,
+            fault=motor.fault or self._alignment_fault, timeout_s=timeout,
+            alignment_contact_confirmed=bool(pulse and pulse.confirmed and not pulse.dispatched),
+        )
 
     def setup(self) -> None:
         self._release()
@@ -104,19 +128,30 @@ class WiredJoystick:
     def disable(self) -> None:
         self.stop()
 
-    def nudge(self, direction: Direction) -> None:
+    def nudge(self, direction: Direction, *, alignment: bool = False) -> None:
         if not isinstance(direction, Direction):
             raise ValueError("A joystick pulse must be LEFT or RIGHT")
         cfg = self._config()
-        if self._clock() < self._ready_at:
+        if self._alignment is not None or self._clock() < self._ready_at:
             raise MotionHardwareError("Wait for the joystick contact to release")
         if {cfg.left_channel, cfg.right_channel} != RELAY_FOR_INPUT.keys():
             raise MotionHardwareError("The joystick output harness requires direction inputs 1 and 2")
         channel = cfg.right_channel if direction == Direction.RIGHT else cfg.left_channel
-        if self._bench is not None:
+        verify_contact = alignment and self._bench is not None
+        if verify_contact:
+            if not cfg.digital_uid:
+                self._alignment_fault = "Bench Align X requires a configured Digital In"
+                return
+            levels = self._hardware.read_inputs()
+            for contact in (cfg.left_channel, cfg.right_channel):
+                if levels[contact] == cfg.active_high:
+                    self._alignment_fault = f"Digital In {contact} is already active before the alignment pulse"
+                    return
+        elif self._bench is not None:
             self._bench.prepare_nudge()
         if self._stop_requested():
             return
+        pulse_started = self._clock()
         self._hardware.press_output(RELAY_FOR_INPUT[channel], cfg.pulse_ms)
         self._pulse_until = self._clock() + cfg.pulse_ms / 1000
         release_s = cfg.release_ms / 1000
@@ -125,15 +160,52 @@ class WiredJoystick:
             self._echo_channel = channel
             self._contact_held = self.raw_inputs[channel] == cfg.active_high
         self._ready_at = self._pulse_until + release_s
-        if self._bench is not None:
+        if verify_contact:
+            opposite = cfg.left_channel if direction == Direction.RIGHT else cfg.right_channel
+            self._alignment = _AlignmentPulse(direction, channel, opposite, cfg.active_high,
+                                              pulse_started + cfg.pulse_ms / 1000)
+            self._observe_alignment(self._hardware.read_inputs())
+        elif self._bench is not None:
             if self._stop_requested():
                 self.stop()
                 return
             self._bench.nudge(direction)
 
+    def _observe_alignment(self, levels) -> None:
+        pulse = self._alignment
+        if pulse is None or self._alignment_fault:
+            return
+        now = self._clock()
+        active = levels[pulse.channel] == pulse.active_high
+        if levels[pulse.opposite_channel] == pulse.active_high:
+            self._alignment_fault = f"Unexpected closure on Digital In {pulse.opposite_channel} during Align X"
+        elif not pulse.confirmed:
+            if now > pulse.confirmation_deadline:
+                self._alignment_fault = f"No relay closure detected on Digital In {pulse.channel} during Align X"
+            elif active:
+                pulse.confirmed = True
+        elif now >= self._ready_at:
+            if active:
+                self._alignment_fault = f"Digital In {pulse.channel} did not release after the alignment pulse"
+            elif pulse.dispatched:
+                self._alignment = None
+
+    def move_after_contact(self) -> None:
+        pulse = self._alignment
+        if pulse is None or not pulse.confirmed or pulse.dispatched or self._alignment_fault:
+            return
+        pulse.dispatched = True
+        if self._stop_requested():
+            return
+        self._bench.prepare_nudge()
+        if not self._stop_requested():
+            self._bench.nudge(pulse.direction)
+
     pulse = nudge  # Compatibility with callers of the original relay port.
 
     def _release(self) -> None:
+        self._alignment = None
+        self._alignment_fault = None
         self._hardware.release_outputs()
         now = self._clock()
         if now < self._pulse_until:
@@ -155,5 +227,7 @@ class WiredJoystick:
             self._hardware.shutdown()
         finally:
             self._bench = None
+            self._alignment = None
+            self._alignment_fault = None
             self._echo_channel = None
             self._ready_at = self._pulse_until = 0.

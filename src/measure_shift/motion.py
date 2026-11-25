@@ -198,6 +198,7 @@ class MotionAction:
     kind: str
     direction: Direction | None = None
     after: float = 0.0
+    alignment: bool = False
 
 
 @dataclass(frozen=True)
@@ -461,7 +462,7 @@ class MotionController:
 
     def _press(self, direction: Direction, now: float, purpose: str):
         self._move = (purpose, now, self.state.timeout_s)
-        self._actions.append(MotionAction("pulse", direction))
+        self._actions.append(MotionAction("pulse", direction, alignment=purpose == "align"))
         self._next_nudge_at = now + 1 / self.config.repeat_hz
         self.phase = {"jog": "jogging", "align": "aligning", "calibration": "calibrating"}[purpose]
 
@@ -732,6 +733,8 @@ class MotionController:
             if self._move is None and not self.state.busy and now >= self._next_nudge_at:
                 self._press(Direction(direction), now, "jog")
                 self.message = "Nudging left" if direction < 0 else "Nudging right"
+        if self._operation == "align_direct" and self._move and self.state.alignment_contact_confirmed:
+            self._actions.append(MotionAction("move_after_contact"))
         self._direction = direction
         actions, self._actions = tuple(self._actions), []
         return actions
@@ -871,7 +874,7 @@ class MotionWorker(threading.Thread):
         return self._stop_requested.is_set() or self.stopping.is_set()
 
     def _execute(self, action):
-        if action.kind in {"pulse", "enable", "freshness"} and self._movement_stop_requested():
+        if action.kind in {"pulse", "move_after_contact", "enable", "freshness"} and self._movement_stop_requested():
             self.controller.cancel("Motion stopped; release both directions before the next press", disarm=False)
             return
         if action.kind == "pulse":
@@ -881,7 +884,12 @@ class MotionWorker(threading.Thread):
                 if self._movement_stop_requested():
                     self.joystick.stop()
                     return
-            self._nudge(action.direction)
+            if action.alignment and isinstance(self.joystick, WiredJoystick):
+                self.joystick.nudge(action.direction, alignment=True)
+            else:
+                self._nudge(action.direction)
+        elif action.kind == "move_after_contact":
+            self.joystick.move_after_contact()
         elif action.kind == "stop":
             self.joystick.stop()
         elif action.kind == "disable":
@@ -970,8 +978,8 @@ class MotionWorker(threading.Thread):
                         self._command(name, value)
                     self._sync_feedback(feedback)
                     if self.controller.connected:
-                        state = self.joystick.read_state()
                         inputs = self.joystick.read_inputs()
+                        state = self.joystick.read_state()
                         # SDK reads can take a network timeout. Observe key
                         # releases and Stop requests received during that wait
                         # before scheduling another finite move.

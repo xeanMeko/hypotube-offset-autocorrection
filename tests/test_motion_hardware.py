@@ -503,7 +503,8 @@ def test_camera_operations_wait_for_the_bench_motor_after_relay_release(sdk, ope
         nonlocal now
         now = at
         measurement = feedback(at, dx, at, generation=len(barriers))
-        for action in worker.controller.tick(now, port.read_state(), port.read_inputs(), measurement):
+        inputs = port.read_inputs()
+        for action in worker.controller.tick(now, port.read_state(), inputs, measurement):
             worker._execute(action)
 
     try:
@@ -511,6 +512,11 @@ def test_camera_operations_wait_for_the_bench_motor_after_relay_release(sdk, ope
         worker._command(operation, 1)
         tick(.1, 4)
         tick(.4, 4)
+        if operation == "align":
+            motor.set_steps.assert_not_called()
+            sdk.digital.value[1] = True
+            tick(.42, 4)
+            sdk.digital.value[1] = False
         motor.set_steps.assert_called_once_with(-8)
         tick(.9, 0)
         assert len(barriers) == 1
@@ -527,6 +533,108 @@ def test_camera_operations_wait_for_the_bench_motor_after_relay_release(sdk, ope
         assert [c for c in sdk.calls if c[0] == "monoflop"] == [("monoflop", 1, True, 80)]
     finally:
         port.shutdown()
+
+
+@pytest.mark.parametrize("direction", list(Direction))
+@pytest.mark.parametrize("active", [True, False])
+def test_alignment_requires_one_matching_relay_closure(sdk, direction, active):
+    motor = install_bench_stepper(sdk)
+    cfg = MotionConfig(active_high=active, left_channel=1, right_channel=2)
+    now = 0.
+    port = WiredJoystick(sdk.adapter, lambda: cfg, clock=lambda: now)
+    port.connect()
+    channel = cfg.right_channel if direction == Direction.RIGHT else cfg.left_channel
+    sdk.digital.value = [not active] * 4
+    port.nudge(direction, alignment=True)
+    motor.set_steps.assert_not_called()
+    for level in (active, active, not active, active):
+        now += .01
+        sdk.digital.value[channel] = level
+        assert port.read_inputs()[channel] != active
+        port.move_after_contact()
+    motor.set_steps.assert_called_once_with(-8 * int(direction))
+    now = .2
+    port.read_inputs()
+    assert "did not release" in port.read_state().fault
+    port.shutdown()
+
+
+@pytest.mark.parametrize("problem", ["no UID", "already active", "missing", "late", "wrong", "stop", "disconnect"])
+def test_alignment_without_valid_confirmation_never_moves(sdk, problem):
+    motor = install_bench_stepper(sdk)
+    cfg = MotionConfig(digital_uid="" if problem == "no UID" else "27s4")
+    now = 0.
+    port = WiredJoystick(sdk.adapter, lambda: cfg, clock=lambda: now)
+    port.connect()
+    if cfg.digital_uid:
+        sdk.digital.value = [False, problem == "already active", False, False]
+    port.nudge(Direction.RIGHT, alignment=True)
+    if problem in {"no UID", "already active"}:
+        assert not any(call[0] == "monoflop" for call in sdk.calls)
+    else:
+        now = .09 if problem in {"missing", "late"} else .02
+        sdk.digital.value[1] = problem in {"late", "stop", "disconnect"}
+        sdk.digital.value[2] = problem == "wrong"
+        port.read_inputs()
+    if problem == "stop":
+        port.stop()
+        port.read_inputs()
+    elif problem == "disconnect":
+        port.shutdown()
+    else:
+        assert "Digital In" in port.read_state().fault
+    port.move_after_contact()
+    motor.set_steps.assert_not_called()
+    if problem != "disconnect":
+        port.shutdown()
+
+
+def test_brief_alignment_feedback_is_captured_by_immediate_read(sdk, monkeypatch):
+    motor = install_bench_stepper(sdk)
+    cfg = MotionConfig(pulse_ms=5)
+    now = 0.
+    port = WiredJoystick(sdk.adapter, lambda: cfg, clock=lambda: now)
+    port.connect()
+    sdk.digital.value = [False] * 4
+    press = sdk.adapter.press_output
+
+    def close_contact(channel, duration):
+        press(channel, duration)
+        sdk.digital.value[1] = True
+
+    monkeypatch.setattr(sdk.adapter, "press_output", close_contact)
+    port.nudge(Direction.RIGHT, alignment=True)
+    sdk.digital.value[1] = False
+    now = .02
+    port.read_inputs()
+    assert port.read_state().alignment_contact_confirmed
+    port.move_after_contact()
+    motor.set_steps.assert_called_once_with(-8)
+    port.shutdown()
+
+
+def test_stop_during_motor_readiness_check_cancels_confirmed_alignment_nudge(sdk):
+    motor = install_bench_stepper(sdk)
+    cfg = MotionConfig()
+    stopped = False
+    port = WiredJoystick(sdk.adapter, lambda: cfg, clock=lambda: 0., stop_requested=lambda: stopped)
+    port.connect()
+    sdk.digital.value = [False] * 4
+    port.nudge(Direction.RIGHT, alignment=True)
+    sdk.digital.value[1] = True
+    port.read_inputs()
+    assert port.read_state().alignment_contact_confirmed
+
+    def request_stop():
+        nonlocal stopped
+        stopped = True
+        return False
+
+    motor.get_enabled.side_effect = request_stop
+    port.move_after_contact()
+    motor.set_steps.assert_not_called()
+    motor.get_enabled.side_effect = None
+    port.shutdown()
 
 
 def test_missing_bricklet_with_inaccessible_master_offers_usb_setup(sdk, monkeypatch):

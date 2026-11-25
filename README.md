@@ -353,7 +353,7 @@ disconnects hardware until you reconnect.
 | Left | A1 | 2 |
 
 The physical joystick, arrow keys, **Align X**, and **Run pixel calibration** send the same relay
-nudge. The relay releases on its own timer. Set **Joystick press** (default
+nudge. The relay releases on its own timer. Open **Settings → Relay pulse timing** to see a live preview. Set **Pulse duration** (default
 80 ms) and **Release interval** (default 100 ms) to suit the receiving
 controller, allowing it to finish the nudge before the next press. **Nudge
 repeat rate** caps how often the app sends pulses (default 2 Hz). Hold the
@@ -361,6 +361,14 @@ joystick left or right, or hold an arrow key in the active main window, to repea
 Moving the joystick during automatic alignment cancels the operation. The app filters its relay echoes so a nudge
 cannot trigger a second pulse. **STOP** releases the relays and ends the
 alignment attempt. The receiving controller handles movement already accepted.
+
+With a Silent Stepper connected on the bench, each **Align X** correction requires
+feedback from Digital In. Both direction inputs must start idle. The app pulses
+the relay and commands one motor nudge when it observes the matching input close
+during the pulse. The next correction waits for contact release and motor
+completion. If the app misses the closure, it stops alignment and reports the
+input channel. The configured press must be long enough for a digital input read
+to capture it. This feedback requirement applies only to bench **Align X**.
 
 ### Direct X alignment
 

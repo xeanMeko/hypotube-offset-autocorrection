@@ -277,6 +277,21 @@ GERMAN = {
         "Dauer, für die das gewählte Relais seinen A-Kontakt bei einem Tastendruck schließt.",
     "Minimum time after release before the next press. Allow the axis to finish its nudge.":
         "Mindestpause bis zum nächsten Tastendruck. Die Achse muss den Schritt beenden können.",
+    "Relay pulse timing": "Relaisimpulse",
+    "Pulse duration": "Impulsdauer",
+    "Relay timing preview": "Vorschau des Relaisimpulses",
+    "Contact closed": "Geschlossen",
+    "Time the relay contact stays closed. Bench Align X must detect Digital In during this pulse.":
+        "Schließdauer des Relaiskontakts. Am Prüfstand muss der Digitaleingang den Impuls während dieser Zeit erfassen.",
+    "Maximum pulses per second. Motor travel and camera feedback can delay the next nudge.":
+        "Maximale Impulszahl pro Sekunde. Motorbewegung und Kamerarückmeldung können den nächsten Impuls verzögern.",
+    "Earliest repeat · {:g} ms": "Frühestens · {:g} ms",
+    "Digital In allows at least {} ms for contact settling.":
+        "Bei aktivem Digitaleingang sind mindestens {} ms zum Entprellen vorgesehen.",
+    "Contact open": "Offen",
+    "Closed for {:g} ms, then open for at least {:g} ms. The repeat rate adds {:g} ms of wait (dashed).":
+        "{:g} ms geschlossen, dann mindestens {:g} ms offen. Durch die Wiederholrate kommen {:g} ms Wartezeit hinzu (gestrichelt).",
+    "Earliest repeat after {:g} ms.": "Früheste Wiederholung nach {:g} ms.",
     "Joystick press": "Tastendauer",
     "Release interval": "Pause nach Loslassen",
     "Relay A0 → IN 1     ·     Relay A1 → IN 2": "Relais A0 → IN 1     ·     Relais A1 → IN 2",

@@ -384,6 +384,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.action(view_menu, "Fit images", self._fit_images)
         settings_menu = self.ui.menu(self.menuBar(), "Settings")
         language_menu = self.ui.menu(settings_menu, "Language")
+        self.ui.action(settings_menu, "Relay pulse timing", self.motion_dock.show_pulse_settings)
         language_group = QtGui.QActionGroup(language_menu)
         self.language_actions = {}
         for code, name in (("de", "Deutsch"), ("en", "English")):

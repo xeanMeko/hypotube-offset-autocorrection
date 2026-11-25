@@ -4,9 +4,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from PySide6 import QtWidgets
-from PySide6 import QtCore
+from PySide6 import QtCore, QtGui
 
 from .i18n import Language, Term
+from .joystick import INPUT_DEBOUNCE_S
 from .motion import MotionConfig
 
 
@@ -175,6 +176,64 @@ class MotionControls(QtCore.QObject):
         self.align_button.setEnabled(status.armed and idle and context.camera_ready)
 
 
+class PulsePreview(QtWidgets.QWidget):
+    """One ideal relay cycle for a held direction, drawn to a common time scale."""
+
+    def __init__(self, language, config):
+        super().__init__()
+        self.ui = language
+        self.config = config
+        self.ui.bind(self.setAccessibleName, "Relay timing preview")
+        self.ui.changed.connect(self.update)
+
+    def sizeHint(self):
+        return QtCore.QSize(200, self.fontMetrics().height() * 4)
+
+    def set_config(self, config):
+        self.config = config
+        self.update()
+
+    @property
+    def release_ms(self):
+        floor = INPUT_DEBOUNCE_S * 1000 if self.config.digital_uid else 0
+        return max(self.config.release_ms, floor)
+
+    @property
+    def period_ms(self):
+        return max(self.config.pulse_ms + self.release_ms, 1000 / self.config.repeat_hz)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        metrics = self.fontMetrics()
+        closed, opened = self.ui.text("Contact closed"), self.ui.text("Contact open")
+        left = max(metrics.horizontalAdvance(label) for label in (closed, opened)) + 10
+        right = self.width() - 5
+        high, low = metrics.height(), 2 * metrics.height()
+        text_color = self.palette().windowText().color()
+        painter.setPen(text_color)
+        painter.drawText(0, high + metrics.ascent() // 3, closed)
+        painter.drawText(0, low + metrics.ascent() // 3, opened)
+        painter.drawText(left, low + metrics.height() + 2, "0 ms")
+        end_label = self.ui.text("Earliest repeat · {:g} ms", round(self.period_ms, 1))
+        if metrics.horizontalAdvance(end_label) + metrics.horizontalAdvance("0 ms") + 8 > right - left:
+            end_label = f"{round(self.period_ms, 1):g} ms"
+        painter.drawText(right - metrics.horizontalAdvance(end_label), low + metrics.height() + 2, end_label)
+        scale = (right - left) / self.period_ms
+        fall = left + self.config.pulse_ms * scale
+        ready = fall + self.release_ms * scale
+        pen = QtGui.QPen(text_color, 2)
+        painter.setPen(pen)
+        painter.drawPolyline([QtCore.QPointF(x, y) for x, y in (
+            (left, low), (left, high), (fall, high), (fall, low), (ready, low))])
+        pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawLine(QtCore.QLineF(ready, low, right, low))
+        pen.setStyle(QtCore.Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        painter.drawLine(right, low, right, high)
+
+
 class MotionDock(QtWidgets.QDockWidget):
     config_changed = QtCore.Signal(object)
     arm_requested = QtCore.Signal()
@@ -190,6 +249,37 @@ class MotionDock(QtWidgets.QDockWidget):
         self._syncing = False
         content = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(content)
+        timing = self.ui.group("Relay pulse timing")
+        form = QtWidgets.QFormLayout(timing)
+        self.pulse_ms = QtWidgets.QSpinBox()
+        self.pulse_ms.setRange(1, 5000)
+        self.ui.bind(self.pulse_ms.setToolTip,
+                     "Time the relay contact stays closed. Bench Align X must detect Digital In during this pulse.")
+        self.release_ms = QtWidgets.QSpinBox()
+        self.release_ms.setRange(1, 10000)
+        self.ui.bind(self.release_ms.setToolTip, "Minimum time after release before the next press. Allow the axis to finish its nudge.")
+        for label, field in (("Pulse duration", self.pulse_ms), ("Release interval", self.release_ms)):
+            field.setSuffix(" ms")
+            field.setKeyboardTracking(False)
+            form.addRow(self.ui.label(label), field)
+        self.frequency = self._number(.1, 10, 1)
+        self.frequency.setSuffix(" Hz")
+        self.frequency.setSingleStep(.1)
+        self.ui.bind(self.frequency.setToolTip,
+                     "Maximum pulses per second. Motor travel and camera feedback can delay the next nudge.")
+        form.addRow(self.ui.label("Nudge repeat rate"), self.frequency)
+        self.preview = PulsePreview(self.ui, self._config)
+        form.addRow(self.preview)
+        self.timing_summary = QtWidgets.QLabel()
+        self.timing_summary.setWordWrap(True)
+        form.addRow(self.timing_summary)
+        self.release_hint = QtWidgets.QLabel()
+        self.ui.bind(self.release_hint.setText, "Digital In allows at least {} ms for contact settling.",
+                     round(INPUT_DEBOUNCE_S * 1000))
+        self.release_hint.setWordWrap(True)
+        form.addRow(self.release_hint)
+        layout.addWidget(timing)
+
         connection = self.ui.group("Bricklet connection")
         form = QtWidgets.QFormLayout(connection)
         self.host = QtWidgets.QLineEdit()
@@ -202,16 +292,6 @@ class MotionDock(QtWidgets.QDockWidget):
                                ("Digital In UID", self.digital_uid),
                                ("Dual Relay UID", self.output_uid)):
             form.addRow(self.ui.label(label), control)
-        self.pulse_ms = QtWidgets.QSpinBox()
-        self.pulse_ms.setRange(1, 5000)
-        self.ui.bind(self.pulse_ms.setToolTip, "Time the selected relay closes its A contact for one joystick press.")
-        self.release_ms = QtWidgets.QSpinBox()
-        self.release_ms.setRange(1, 10000)
-        self.ui.bind(self.release_ms.setToolTip, "Minimum time after release before the next press. Allow the axis to finish its nudge.")
-        for label, field in (("Joystick press", self.pulse_ms), ("Release interval", self.release_ms)):
-            field.setSuffix(" ms")
-            field.setKeyboardTracking(False)
-            form.addRow(self.ui.label(label), field)
         form.addRow(self.ui.label("Relay A0 → IN 1     ·     Relay A1 → IN 2"))
         layout.addWidget(connection)
 
@@ -250,10 +330,6 @@ class MotionDock(QtWidgets.QDockWidget):
         form = QtWidgets.QFormLayout(jogging)
         self.arm_button = self.ui.button("Enable joystick")
         self.ui.bind(self.arm_button.setToolTip, "Enable app movement with the joystick and arrow keys released.")
-        self.frequency = self._number(.1, 10, 1)
-        self.frequency.setSuffix(" Hz")
-        self.frequency.setSingleStep(.1)
-        form.addRow(self.ui.label("Nudge repeat rate"), self.frequency)
         form.addRow(self.arm_button)
         layout.addWidget(jogging)
 
@@ -275,6 +351,8 @@ class MotionDock(QtWidgets.QDockWidget):
         form.addRow(self.use_known_distance_button)
         form.addRow(self.ui.label("Test presses (+ right / − left)"), self.test_presses)
         layout.addWidget(calibration)
+        for group in (timing, connection, inputs, calibration):
+            group.layout().setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         layout.addStretch()
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -296,6 +374,24 @@ class MotionDock(QtWidgets.QDockWidget):
         self._translate_channels()
         self.set_config(self._config)
         self.set_connected(False)
+
+    def show_pulse_settings(self):
+        self.show()
+        self.raise_()
+        self.widget().verticalScrollBar().setValue(0)
+        self.pulse_ms.setFocus()
+
+    def _refresh_preview(self):
+        self.preview.set_config(self._config)
+        release = self.preview.release_ms
+        self.release_hint.setVisible(release > self._config.release_ms)
+        extra = max(0, self.preview.period_ms - self._config.pulse_ms - release)
+        self.ui.bind(self.timing_summary.setText,
+                     "Closed for {:g} ms, then open for at least {:g} ms. "
+                     "The repeat rate adds {:g} ms of wait (dashed).",
+                     self._config.pulse_ms, release, round(extra, 1))
+        self.ui.bind(self.preview.setAccessibleDescription,
+                     "Earliest repeat after {:g} ms.", round(self.preview.period_ms, 1))
 
     def _translate_channels(self):
         for control in (self.left_channel, self.right_channel, self.reference_channel, self.align_channel):
@@ -371,6 +467,7 @@ class MotionDock(QtWidgets.QDockWidget):
         finally:
             self._syncing = False
         self._inputs_edited()
+        self._refresh_preview()
 
     def _edited(self):
         if self._syncing:
@@ -387,6 +484,7 @@ class MotionDock(QtWidgets.QDockWidget):
                 self.set_config(config, preserve_input_edits=True)
             else:
                 self._config = config
+                self._refresh_preview()
             if config != old:
                 self.config_changed.emit(config)
         except ValueError as exc:

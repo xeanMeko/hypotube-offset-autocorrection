@@ -816,6 +816,33 @@ def test_relay_settings_support_output_only_and_clear_scale_when_pulse_changes(a
     dock.close()
 
 
+def test_pulse_preview_tracks_settings_and_effective_release(application):
+    dock = MotionDock()
+    dock.ui.select("en")
+    assert dock.preview.period_ms == 500
+    assert "320 ms of wait" in dock.timing_summary.text()
+    dock.show_pulse_settings()
+    assert dock.pulse_ms.isVisible()
+    assert not dock.preview.grab().isNull()
+
+    dock.release_ms.setValue(1)
+    dock.frequency.setValue(10)
+    assert dock.preview.period_ms == 110
+    assert dock.release_hint.isVisible()
+    dock.digital_uid.clear()
+    dock.digital_uid.editingFinished.emit()
+    assert dock.preview.period_ms == 100
+    assert "19 ms of wait" in dock.timing_summary.text()
+    assert dock.release_hint.isHidden()
+
+    dock.set_config(replace(dock.config, pulse_ms=150, release_ms=50))
+    assert dock.preview.period_ms == 200
+    assert "0 ms of wait" in dock.timing_summary.text()
+    dock.ui.select("de")
+    assert "Wartezeit" in dock.timing_summary.text()
+    dock.close()
+
+
 def test_usb_access_button_retries_only_after_authorization(application, monkeypatch):
     from measure_shift.motion_hardware import MasterBrickAccessError
 
