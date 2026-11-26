@@ -72,8 +72,18 @@
   die Kamera erkennt und ein Livebild anzeigt. Schließen Sie danach das
   IDS-Programm.
   \item Schließen Sie den Tinkerforge Master Brick per USB am PC an und
-  prüfen Sie, ob die Achsensteuerung bereit ist. Die Relaisverdrahtung finden Sie in Abschnitt~\ref{sec:motion-setup}.
+  prüfen Sie, ob die Achsensteuerung bereit ist. Die Relaisverdrahtung finden Sie in Abschnitt~\ref{sec:wiring}.
 \end{itemize}
+
+\subsection{Tinkerforge Verdrahtung}
+\label{sec:wiring}
+
+\begin{center}
+  \includegraphics[width=\linewidth]{tinkerforge-wiring.drawio.png}
+  \par\smallskip
+  {\small\textbf{Abbildung 1:} Anschluss von Joystick, Tinkerforge-Bricklets
+  und Maschinensteuerung.}
+\end{center}
 
 \subsection{Measure Shift starten}
 
@@ -164,7 +174,7 @@ die X/Y-Abweichung und die vorbereitete Toleranz.
 \begin{center}
   \includegraphics[width=0.90\linewidth]{assets/bedienoberflaeche.png}
   \par\smallskip
-  {\small\textbf{Abbildung 1:} Bildschirmübersicht mit gespeicherten
+  {\small\textbf{Abbildung 2:} Bildschirmübersicht mit gespeicherten
   Beispielbildern. Die Bedienung im beschriebenen Arbeitsablauf erfolgt am Joystick.}
 \end{center}
 
@@ -263,16 +273,6 @@ stillsteht. Das Übernehmen einer Änderung bricht eine angeforderte oder laufen
 Kalibrierung oder automatische Ausrichtung ab. Verbindungseinstellungen,
 Impulszeiten, Wiederholrate und Testimpulsanzahl werden jeweils nach der Eingabe
 übernommen.
-
-\subsection{Verdrahtung am Prüfstand mit Dual Relay}
-\label{sec:wiring}
-
-\begin{center}
-  \includegraphics[width=\linewidth]{tinkerforge-wiring.drawio.png}
-  \par\smallskip
-  {\small\textbf{Abbildung 2:} Anschluss von Joystick, Tinkerforge-Bricklets
-  und Maschinensteuerung.}
-\end{center}
 
 \subsection{Bricklet-Verbindung}
 

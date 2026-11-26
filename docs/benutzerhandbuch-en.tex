@@ -70,8 +70,18 @@
   \item Connect the IDS camera to the PC. Verify that the IDS camera software
   detects it and can display a live image, then close the IDS viewer.
   \item Connect the Tinkerforge Master Brick to the PC via USB and make sure
-  the axis controller is ready. See Section~\ref{sec:motion-setup} for the relay wiring.
+  the axis controller is ready. See Section~\ref{sec:wiring} for the relay wiring.
 \end{itemize}
+
+\subsection{Wiring Diagram}
+\label{sec:wiring}
+
+\begin{center}
+  \includegraphics[width=\linewidth]{tinkerforge-wiring.drawio.png}
+  \par\smallskip
+  {\small\textbf{Figure 1:} Connections between the joystick, Tinkerforge
+  Bricklets, and machine controller.}
+\end{center}
 
 \subsection{Starting Measure Shift}
 
@@ -160,7 +170,7 @@ measurement status, X/Y displacement and configured tolerance.
 \begin{center}
   \includegraphics[width=0.90\linewidth]{assets/bedienoberflaeche.png}
   \par\smallskip
-  {\small\textbf{Figure 1:} Screen overview using saved sample images.
+  {\small\textbf{Figure 2:} Screen overview using saved sample images.
   The operating procedure described here is performed using the joystick.}
 \end{center}
 
@@ -252,16 +262,6 @@ Open \textbf{Tools} $\rightarrow$ \textbf{Motion Setup} to show the settings
 panel. Wait for the axis to stop before editing. Applying a change cancels any
 pending or running calibration or automatic alignment. Connection and timing
 settings, repeat rate, and test count are applied as you finish editing them.
-
-\subsection{Dual Relay bench wiring}
-\label{sec:wiring}
-
-\begin{center}
-  \includegraphics[width=\linewidth]{tinkerforge-wiring.drawio.png}
-  \par\smallskip
-  {\small\textbf{Figure 2:} Connections between the joystick, Tinkerforge
-  Bricklets, and machine controller.}
-\end{center}
 
 \subsection{Bricklet connection}
 

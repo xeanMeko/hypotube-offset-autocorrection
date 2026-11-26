@@ -231,7 +231,7 @@
         <mxCell id="harness-label" parent="1" value="Joystick harness" vertex="1" style="text;html=0;whiteSpace=wrap;overflow=hidden;strokeColor=none;fillColor=none;verticalAlign=middle;fontFamily=Arial;spacing=0;align=center;fontSize=14;fontColor=#ebc36b;fontStyle=0;">
           <mxGeometry x="845" y="580" width="120" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="note" parent="1" value="Dashed lines show logical connections; relay contact feed and remaining internal connections require confirmation." vertex="1" style="text;html=0;whiteSpace=wrap;overflow=hidden;strokeColor=none;fillColor=none;verticalAlign=middle;fontFamily=Arial;spacing=0;align=left;fontSize=16;fontColor=#acb7c0;fontStyle=0;">
+        <mxCell id="note" parent="1" value="Dashed lines show logical connections" vertex="1" style="text;html=0;whiteSpace=wrap;overflow=hidden;strokeColor=none;fillColor=none;verticalAlign=middle;fontFamily=Arial;spacing=0;align=left;fontSize=16;fontColor=#acb7c0;fontStyle=0;">
           <mxGeometry x="35" y="800" width="1320" height="48" as="geometry" />
         </mxCell>
       </root>
