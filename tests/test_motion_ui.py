@@ -284,22 +284,22 @@ def test_gui_limits_delayed_digital_captures_and_discards_stale_requests(applica
         application.processEvents()
 
 
-def test_main_calibration_button_uses_the_test_move_from_axis_settings(application, monkeypatch):
+def test_calibration_button_uses_the_test_move_from_axis_settings(application, monkeypatch):
     window = MainWindow(motion_hardware=FakeHardware())
     requested = []
     monkeypatch.setattr(window.motion, "calibrate", requested.append)
     try:
-        window.motion_controls.calibrate_button.setEnabled(True)
-        window.motion_controls.calibrate_button.click()
+        window.motion_dock.calibrate_button.setEnabled(True)
+        window.motion_dock.calibrate_button.click()
         assert requested == [1]
         window.motion_dock.test_presses.setValue(-250)
         assert window.motion_dock.config.calibration_presses == -250
-        assert "250 Tastendrücke nach links" in window.motion_controls.calibrate_button.toolTip()
-        window.motion_controls.calibrate_button.click()
+        assert "250 Tastendrücke nach links" in window.motion_dock.calibrate_button.toolTip()
+        window.motion_dock.calibrate_button.click()
         assert requested == [1, -250]
         window.motion_dock.test_presses.setValue(0)
         assert window.motion_dock.test_presses.value() == -250
-        assert "250 Tastendrücke nach links" in window.motion_controls.calibrate_button.toolTip()
+        assert "250 Tastendrücke nach links" in window.motion_dock.calibrate_button.toolTip()
     finally:
         window.close()
         application.processEvents()
@@ -338,13 +338,14 @@ def test_main_axis_controls_work_with_settings_closed(application):
         assert window.motion_dock.toggleViewAction() in window.tools_menu.actions()
         window.resize(1100, 760)
         application.processEvents()
-        for button in (controls.connect_button, controls.calibrate_button,
-                       controls.align_button, controls.stop_button):
+        for button in (controls.connect_button, controls.align_button, controls.stop_button):
             assert button.isVisible()
             assert toolbar.isAncestorOf(button)
             assert not button.visibleRegion().isEmpty()
         assert not window.tools_button.visibleRegion().isEmpty()
-        assert not controls.calibrate_button.isEnabled()
+        assert not window.motion_dock.calibrate_button.isVisible()
+        assert toolbar.findChild(QtWidgets.QPushButton, "pixelCalibrationButton") is None
+        assert not window.motion_dock.calibrate_button.isEnabled()
         assert not controls.align_button.isEnabled()
         pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
              timeout=3, required=True)
@@ -358,7 +359,7 @@ def test_main_axis_controls_work_with_settings_closed(application):
         assert controls.stop_button.isEnabled()
         assert not controls.stop_button.visibleRegion().isEmpty()
         assert not window.tools_button.visibleRegion().isEmpty()
-        assert not controls.calibrate_button.isEnabled()  # No live camera.
+        assert not window.motion_dock.calibrate_button.isEnabled()  # No live camera.
         assert not controls.align_button.isEnabled()
         assert "BEREIT" in controls.status.text()
         releases = hardware.calls.count("release")
@@ -684,17 +685,20 @@ def test_real_app_relay_calibration_and_digital_alignment(
     if calibration_reference == "unrelated":
         assert not window.last_pair.result.usable
     assert not window.motion_dock.isVisible()
-    assert window.motion_controls.calibrate_button.isVisible()
-    pump(application, lambda: window.motion_controls.calibrate_button.isEnabled(),
+    window.motion_dock.toggleViewAction().trigger()
+    assert window.motion_dock.calibrate_button.isVisible()
+    assert window.motion_dock.calibrate_button.parentWidget() is window.motion_dock.known_pixel_distance.parentWidget()
+    pump(application, lambda: window.motion_dock.calibrate_button.isEnabled(),
          timeout=3, required=True)
     hardware.nudge = 6
     window.motion_dock.test_presses.setValue(-2)
-    window.motion_controls.calibrate_button.click()
+    window.motion_dock.calibrate_button.click()
     pump(application, lambda: window.motion_dock.config.pixels_per_right_press is not None,
          timeout=5, required=True)
     assert window.motion_dock.config.pixels_per_right_press == pytest.approx(-3, abs=.2)
     assert window.motion_dock.config.calibration_source_id == "ids:serial:fake-serial"
     assert "px pro Tastendruck nach rechts" in window.motion_dock.pixel_scale.text()
+    window.motion_dock.close()
     assert window.reference is saved_reference
     pump(application, timeout=.15)
     assert hardware.pulses == [(1, 80), (1, 80)]

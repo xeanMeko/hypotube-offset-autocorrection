@@ -354,10 +354,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.motion_controls.usb_access_button.clicked.connect(self._enable_brick_access)
         self.motion_dock.arm_requested.connect(self.motion.arm)
         self.motion_controls.stop_button.clicked.connect(self._stop_motion)
-        self.motion_controls.calibrate_button.clicked.connect(
+        self.motion_dock.calibrate_button.clicked.connect(
             lambda: self._calibrate_motion(self.motion_dock.test_presses.value()))
-        self.motion_dock.test_presses.valueChanged.connect(
-            lambda: self.motion_controls.set_calibration_move(self.motion_dock.test_presses.value()))
         self.motion_dock.known_distance_requested.connect(self._set_known_pixel_distance)
         self.motion_controls.align_button.clicked.connect(self._align_motion)
         self.motion_dock.error.connect(self._error)

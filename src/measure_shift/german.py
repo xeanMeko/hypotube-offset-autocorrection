@@ -261,8 +261,8 @@ GERMAN = {
     "left": "links",
     "press": "Tastendruck",
     "presses": "Tastendrücke",
-    "Capture a fresh live image, send {0:,} {1} relay {2}, and measure the pixel movement. Keep a textured feature visible. Change the test move in Motion Setup → Pixel calibration.":
-        "Nimmt ein neues Livebild auf und misst den Pixelweg für {0} {2} nach {1}. Eine strukturierte Stelle muss sichtbar bleiben. Die Anzahl lässt sich unter „Achse einrichten → Pixelkalibrierung“ ändern.",
+    "Capture a fresh live image, send {0:,} {1} relay {2}, and measure the pixel movement. Keep a textured feature visible.":
+        "Nimmt ein neues Livebild auf und misst den Pixelweg für {0} {2} nach {1}. Eine strukturierte Stelle muss sichtbar bleiben.",
     "Release the relays and cancel further presses. The axis controller handles any nudge already accepted.":
         "Öffnet die Relais und bricht weitere Tastendrücke ab. Bereits angenommene Schritte führt die Achssteuerung zu Ende.",
     "Waiting for administrator approval for Master Brick USB access":

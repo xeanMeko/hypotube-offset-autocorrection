@@ -394,7 +394,7 @@ alignment.
 
 ### Optional pixel calibration
 
-**Run pixel calibration** measures the signed X displacement per right relay
+In **Motion Setup → Pixel calibration**, **Run pixel calibration** measures the signed X displacement per right relay
 press for the live camera. Set **Test presses** to the number of nudges.
 Positive counts pulse right and negative counts pulse left. The app compares
 settled frames against a live baseline. The total X movement must reach at

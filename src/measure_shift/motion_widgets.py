@@ -95,15 +95,13 @@ class MotionControls(QtCore.QObject):
         self.ui.bind(self.connect_button.setToolTip, "Connect the joystick interface and enable movement. Release held directions before moving. Toggle off to stop and disconnect.")
         self.connection_revision = 0
         self.usb_setup_pending = False
-        self.calibrate_button = self.ui.button("Run pixel calibration")
-        self.calibrate_button.setObjectName("pixelCalibrationButton")
         self.align_button = self.ui.button("Align X")
         self.align_button.setObjectName("alignXButton")
         self.ui.bind(self.align_button.setToolTip,
             "Use a fresh camera measurement after each relay nudge to align X to the reference.")
         self.stop_button = self.ui.button("STOP")
         self.stop_button.setObjectName("axisStopButton")
-        for button in (self.connect_button, self.calibrate_button, self.align_button, self.stop_button):
+        for button in (self.connect_button, self.align_button, self.stop_button):
             toolbar.addWidget(button)
         self.usb_access_button = self.ui.button("Enable Master Brick access")
         self.ui.bind(self.usb_access_button.setToolTip, "Ask an administrator to enable USB access on this PC and retry the connection.")
@@ -114,17 +112,8 @@ class MotionControls(QtCore.QObject):
         self.status.setWordWrap(False)
         self.status.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         self.status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        self.set_calibration_move(MotionConfig.calibration_presses)
-        for button in (self.calibrate_button, self.align_button, self.stop_button):
+        for button in (self.align_button, self.stop_button):
             button.setEnabled(False)
-
-    def set_calibration_move(self, presses):
-        direction = Term("right" if presses > 0 else "left")
-        unit = Term("press" if abs(presses) == 1 else "presses")
-        self.ui.bind(self.calibrate_button.setToolTip,
-                     "Capture a fresh live image, send {0:,} {1} relay {2}, and measure the pixel movement. "
-                     "Keep a textured feature visible. Change the test move in Motion Setup → Pixel calibration.",
-                     abs(presses), direction, unit)
 
     def _connection_caption(self, connected):
         if self.compact:
@@ -133,7 +122,6 @@ class MotionControls(QtCore.QObject):
 
     def set_compact(self, compact):
         self.compact = compact
-        self.ui.bind(self.calibrate_button.setText, "Calibrate" if compact else "Run pixel calibration")
         self.ui.bind(self.connect_button.setText, self._connection_caption(self.connected))
         button = self.connect_button
         button.ensurePolished()
@@ -172,7 +160,6 @@ class MotionControls(QtCore.QObject):
         self.ui.bind(self.status.setText, *message)
         self.ui.bind(self.status.setToolTip, *message)
         idle = not status.busy and status.phase in ("idle", "ready", "aligned", "stopped")
-        self.calibrate_button.setEnabled(status.armed and idle and context.live_camera_ready)
         self.align_button.setEnabled(status.armed and idle and context.camera_ready)
 
 
@@ -346,10 +333,13 @@ class MotionDock(QtWidgets.QDockWidget):
         self.ui.bind(self.known_pixel_distance.setToolTip, "X movement for one right joystick press. Enter negative pixels if the image moves left.")
         self.use_known_distance_button = self.ui.button("Use known distance")
         self.ui.bind(self.use_known_distance_button.setToolTip, "Save a measured displacement per right press for the live camera.")
+        self.calibrate_button = self.ui.button("Run pixel calibration")
+        self.calibrate_button.setObjectName("pixelCalibrationButton")
         form.addRow(self.pixel_scale)
         form.addRow(self.ui.label("Known X / right press"), self.known_pixel_distance)
         form.addRow(self.use_known_distance_button)
         form.addRow(self.ui.label("Test presses (+ right / − left)"), self.test_presses)
+        form.addRow(self.calibrate_button)
         layout.addWidget(calibration)
         for group in (timing, connection, inputs, calibration):
             group.layout().setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -373,7 +363,18 @@ class MotionDock(QtWidgets.QDockWidget):
         self.ui.changed.connect(self._translate_channels)
         self._translate_channels()
         self.set_config(self._config)
+        self.test_presses.valueChanged.connect(self._update_calibration_tooltip)
+        self._update_calibration_tooltip()
         self.set_connected(False)
+
+    def _update_calibration_tooltip(self):
+        presses = self.test_presses.value()
+        direction = Term("right" if presses > 0 else "left")
+        unit = Term("press" if abs(presses) == 1 else "presses")
+        self.ui.bind(self.calibrate_button.setToolTip,
+                     "Capture a fresh live image, send {0:,} {1} relay {2}, and measure the pixel movement. "
+                     "Keep a textured feature visible.",
+                     abs(presses), direction, unit)
 
     def show_pulse_settings(self):
         self.show()
@@ -498,6 +499,7 @@ class MotionDock(QtWidgets.QDockWidget):
     def set_connected(self, connected):
         self._display_connection(connected)
         self.arm_button.setEnabled(False)
+        self.calibrate_button.setEnabled(False)
         self.use_known_distance_button.setEnabled(False)
 
     def display_status(self, status, context):
@@ -509,6 +511,7 @@ class MotionDock(QtWidgets.QDockWidget):
         idle = not status.busy and status.phase in ("idle", "ready", "aligned", "stopped")
         self.arm_button.setEnabled(status.connected and not status.armed)
         live = context.live_camera_ready
+        self.calibrate_button.setEnabled(status.armed and idle and live)
         self.use_known_distance_button.setEnabled(
             live and (idle or status.phase in ("disconnected", "connected"))
             and not status.busy)

@@ -103,7 +103,7 @@ def test_edits_autosave_and_restore_across_window_restart(application, tmp_path)
         assert dock.config.pulse_ms == 120 and dock.config.release_ms == 140
         assert dock.config.repeat_hz == 4
         assert dock.config.calibration_presses == -250 and dock.test_presses.value() == -250
-        assert "250 Tastendrücke nach links" in restored.motion_controls.calibrate_button.toolTip()
+        assert "250 Tastendrücke nach links" in restored.motion_dock.calibrate_button.toolTip()
         assert restored.config.scale == .5 and restored.config.min_response == .25
         assert restored.tolerance.value() == 2.5 and restored.dock.rate.value() == 3
         assert restored.source_kind.currentText() == "Basler"
@@ -216,7 +216,7 @@ def test_controls_and_plot_fonts_follow_their_window(application, tmp_path, lang
             assert window.trend_plot.getAxis("bottom").style["tickFont"].pixelSize() == size
             assert not window.live_pane.plot.getAxis("bottom").isVisible()
             for button in (window.tools_button, window.motion_controls.stop_button,
-                           window.motion_controls.align_button, window.motion_controls.calibrate_button):
+                           window.motion_controls.align_button):
                 assert not button.visibleRegion().isEmpty()
                 assert button.width() >= button.sizeHint().width()
         window.showFullScreen()
