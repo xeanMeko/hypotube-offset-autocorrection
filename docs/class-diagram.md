@@ -73,7 +73,7 @@ classDiagram
 
 ## Motion control
 
-`MainWindow` forwards inspection results to `MotionWorker` and routes its fresh-frame requests to `CaptureWorker`. Each request sets an acquisition cutoff and returns a generation that the motion controller uses to validate feedback. During pixel calibration, `MotionWorker` reads `CalibrationObservation` objects from `MeasurementWorker` so feedback is measured against the pre-move live baseline. The controller uses `DirectXSearch` for automatic X alignment.
+`MainWindow` forwards inspection results to `MotionWorker` and routes its fresh-frame requests to `CaptureWorker`. Each request sets an acquisition cutoff and returns a generation that the motion controller uses to validate feedback. During pixel calibration, `MotionWorker` reads `CalibrationObservation` objects from `MeasurementWorker` so feedback is measured against the pre-move live baseline. The controller uses `AxisSearch` for the active axis during automatic alignment.
 
 ```mermaid
 classDiagram
@@ -84,7 +84,7 @@ classDiagram
     class CalibrationObservation
     class MotionWorker
     class MotionController
-    class DirectXSearch
+    class AxisSearch
     class JoystickPort {
         <<protocol>>
     }
@@ -120,7 +120,7 @@ classDiagram
     MotionController --> JoystickState
     MotionController ..> MotionAction : plans
     MotionController ..> MotionStatus : creates
-    MotionController *-- "0..1" DirectXSearch : runs during X alignment
+    MotionController *-- "0..1" AxisSearch : tracks the active axis
     MotionStatus --> MotionConfig
     MotionStatus --> "0..1" ReferenceCaptureRequest
 

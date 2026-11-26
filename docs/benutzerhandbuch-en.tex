@@ -37,7 +37,7 @@
 \fancyhf{}
 \fancyhead[L]{\small Measure Shift}
 \fancyhead[R]{\small User manual}
-\fancyfoot[L]{\small Edition 23 November 2026}
+\fancyfoot[L]{\small Edition 26 November 2026}
 \fancyfoot[R]{\small Page \thepage\ of \pageref*{LastPage}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0.4pt}
@@ -70,8 +70,7 @@
   \item Connect the IDS camera to the PC. Verify that the IDS camera software
   detects it and can display a live image, then close the IDS viewer.
   \item Connect the Tinkerforge Master Brick to the PC via USB and make sure
-  the axis controller is ready. For the external machine wiring diagram,
-  see Section~\ref{sec:wiring}.
+  the axis controller is ready. See Section~\ref{sec:motion-setup} for the relay wiring.
 \end{itemize}
 
 \subsection{Starting Measure Shift}
@@ -97,15 +96,14 @@ required image tolerance in the application.
 \toprule
 \textbf{Control} & \textbf{Function} \\
 \midrule
-Joystick left/right & Move the motor axis in steps. Holding the joystick repeats the movement. \\
+Arrow keys & Nudge the selected direction. Quad Relay supports all four directions; Dual Relay supports left and right. \\
 \ReferenceButton & Capture the current camera image as the new reference image. \\
-\AlignButton{} or \textbf{Align X} & Start direct X alignment to the current reference. \\
+\AlignButton & Start Align XY (Quad Relay) or Align X (Dual Relay). \\
 \textbf{Run pixel calibration} & Measure the X displacement per relay press. \\
 \bottomrule
 \end{tabularx}
 
-These names refer to the functions assigned to the joystick. The exact button
-positions depend on your setup.
+Use the configured reference and alignment trigger inputs or the corresponding on-screen buttons.
 
 \newpage
 \section{Operating procedure}
@@ -127,12 +125,14 @@ positions depend on your setup.
   Keep the joystick in its neutral position during automatic corrections.
 
   \item \textbf{Check the result.} Check the axis message
-  \Status{X aligned}, the X/Y values and the image overlap.
+  \Status{XY aligned} (\Status{X aligned} on the dual-relay bench), the X/Y values and the image overlap.
   The overall status \Status{ALIGNED} confirms that the image displacement
   is within the configured tolerance.
 \end{enumerate}
 
-\subsection{How Align X works}
+\subsection{Alignment by relay type}
+
+With the quad relay, Align XY corrects the larger displacement first and measures both axes after every nudge. See Section~\ref{sec:motion-setup}. The following sequence describes Align X on the dual-relay bench.
 
 \begin{description}
   \item[Measure.] OpenCV phase correlation compares the live image with the
@@ -184,14 +184,7 @@ depends on the configured setup. First observe the effect of a small movement.
 
 \subsection{Assessing alignment}
 
-\Note{X-axis correction.}{The motor axis corrects X only. Any remaining
-Y displacement is not corrected by this joystick procedure. If Y is outside
-the required tolerance, have the setup checked.}
-
-The configured \textbf{Tolerance} applies to the combined distance in X and Y.
-For example, with a tolerance of 1~px, X~=~0.8~px and Y~=~0.8~px together
-are still outside tolerance. Use the status as the deciding indicator;
-the numeric readout is slightly smoothed.
+With the quad relay the tolerance applies to each axis separately. At 1~px tolerance, offsets of 0.8~px on both axes are within tolerance. On the dual-relay bench Align X corrects the horizontal axis and the overall readout uses straight-line distance. The numeric readout is slightly smoothed.
 
 \Note{Software preview.}{Views labelled \textbf{Compensated} shift the image
 in software only. A matching preview therefore does not confirm mechanical
@@ -221,7 +214,9 @@ A new capture replaces the previous reference image. Check the position
 before capturing. After restarting the application, capture the required
 reference again using the joystick.
 
-\subsection{Starting direct alignment}
+\subsection{Starting alignment}
+
+With Quad Relay, press the alignment trigger or click \textbf{Align XY}. The following details apply to the dual relay.
 
 Press and release the \AlignButton{} once, or click \textbf{Align X}.
 The app compares the new X measurement after each relay nudge and chooses
@@ -238,22 +233,27 @@ visible throughout the test. The part stays at the final position.
 
 \subsection{Cancelling an operation in progress}
 
-To cancel calibration or automatic alignment in progress, briefly move the
-joystick in either movement direction, then release it. The automatic
-operation is cancelled. Wait until motion has stopped and the joystick is
-in its neutral position before moving again or pressing the \AlignButton{}.
-Releasing the align button alone does not cancel an operation in progress.
+Press \textbf{STOP} to cancel automatic alignment or calibration. Wait for the machine to stop before using its joystick. Only the dual-relay bench setup monitors physical joystick direction inputs.
 
 \newpage
 \section{Motion Setup}
 \label{sec:motion-setup}
+\subsection{Quad Relay and two-axis alignment}
+New installations use Quad Relay \texttt{2imB}. Connect outputs 0, 1, 2 and 3 to the
+machine contacts for right, left, up and down respectively. Digital In \texttt{27s4}
+uses input 0 for reference capture and input 3 for Align XY. Both trigger on a
+rising edge. Inputs 1 and 2 are spare. The joystick stays wired to the machine.
+Use the four arrow keys for manual nudges. Press STOP before taking over with the
+machine joystick. The app cannot detect its movement.
+Align XY corrects the larger displacement first and checks both axes after each
+pulse. Three fresh valid frames within the tolerance on each axis confirm alignment.
 
 Open \textbf{Tools} $\rightarrow$ \textbf{Motion Setup} to show the settings
 panel. Wait for the axis to stop before editing. Applying a change cancels any
 pending or running calibration or automatic alignment. Connection and timing
 settings, repeat rate, and test count are applied as you finish editing them.
 
-\subsection{External machine wiring}
+\subsection{Dual Relay bench wiring}
 \label{sec:wiring}
 
 \begin{center}
@@ -267,7 +267,7 @@ settings, repeat rate, and test count are applied as you finish editing them.
 
 Click \textbf{Disconnect hardware} before changing the connection settings.
 Enter the Brick Daemon \textbf{Host} and \textbf{Port} (defaults
-\texttt{localhost} and \texttt{4223}) and the \textbf{Dual Relay UID}. Leave
+\texttt{localhost} and \texttt{4223}) and the \textbf{Relay UID}. Leave
 \textbf{Digital In UID} blank for operation without physical joystick inputs.
 Click \textbf{Connect hardware} when the connection settings are ready.
 
@@ -312,7 +312,7 @@ Check both indicators if an operation is interrupted.
 \toprule
 \textbf{Display} & \textbf{Meaning and next step} \\
 \midrule
-\Status{ALIGNED} & The overall image displacement is within the configured tolerance. Check the image overlap. \\
+\Status{ALIGNED} & The selected setup's tolerance criterion is satisfied. Check the image overlap. \\
 \addlinespace
 \Status{X aligned} & X is aligned. Also check Y and the overall status. \\
 \addlinespace

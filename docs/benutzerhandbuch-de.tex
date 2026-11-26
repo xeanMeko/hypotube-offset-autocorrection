@@ -38,7 +38,7 @@
 \fancyhf{}
 \fancyhead[L]{\small Measure Shift}
 \fancyhead[R]{\small Bedienungsanleitung}
-\fancyfoot[L]{\small Ausgabe 23.11.2026}
+\fancyfoot[L]{\small Ausgabe 26.11.2026}
 \fancyfoot[R]{\small Seite \thepage\ von \pageref*{LastPage}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0.4pt}
@@ -72,8 +72,7 @@
   die Kamera erkennt und ein Livebild anzeigt. Schließen Sie danach das
   IDS-Programm.
   \item Schließen Sie den Tinkerforge Master Brick per USB am PC an und
-  prüfen Sie, ob die Achsensteuerung bereit ist. Den Verdrahtungsplan für
-  die externe Maschine finden Sie in Abschnitt~\ref{sec:wiring}.
+  prüfen Sie, ob die Achsensteuerung bereit ist. Die Relaisverdrahtung finden Sie in Abschnitt~\ref{sec:motion-setup}.
 \end{itemize}
 
 \subsection{Measure Shift starten}
@@ -99,15 +98,14 @@ die gewünschte Bildtoleranz in der Anwendung ein.
 \toprule
 \textbf{Bedienelement} & \textbf{Funktion} \\
 \midrule
-Joystick links/rechts & Die Motorachse schrittweise verfahren. Halten wiederholt die Bewegung. \\
+Pfeiltasten & In die gewählte Richtung verfahren. Das Quad Relay unterstützt alle vier Richtungen, das Dual Relay links und rechts. \\
 \Referenz & Das aktuelle Kamerabild als neues Sollbild übernehmen. \\
-\Ausrichten{} oder \textbf{Align X} & Die direkte X-Ausrichtung am aktuellen Sollbild starten. \\
+\Ausrichten & XY-Ausrichtung (Quad Relay) oder X-Ausrichtung (Dual Relay) starten. \\
 \textbf{Run pixel calibration} & Den X-Versatz pro Relaisimpuls messen. \\
 \bottomrule
 \end{tabularx}
 
-Die Bezeichnungen benennen die zugeordneten Funktionen am Joystick. Die genaue
-Lage der Taster richtet sich nach Ihrem Aufbau.
+Verwenden Sie die konfigurierten Triggereingänge oder die entsprechenden Schaltflächen.
 
 \newpage
 \section{Arbeitsablauf}
@@ -128,12 +126,14 @@ Lage der Taster richtet sich nach Ihrem Aufbau.
   Während der automatischen Korrekturen den Joystick in Neutralstellung lassen.
 
   \item \textbf{Ergebnis kontrollieren.} Die Achsenmeldung
-  \Status{X aligned}, die X/Y-Werte und die Bildüberdeckung prüfen.
+  \Status{XY aligned} (am Dual-Relay-Prüfstand \Status{X aligned}), die X/Y-Werte und die Bildüberdeckung prüfen.
   Die Gesamtanzeige \Status{ALIGNED} bestätigt den Bildversatz innerhalb der
   eingestellten Toleranz.
 \end{enumerate}
 
-\subsection{So funktioniert Align X}
+\subsection{Ausrichtung nach Relaistyp}
+
+Beim Quad Relay korrigiert die XY-Ausrichtung zuerst den größeren Versatz und misst nach jedem Impuls beide Achsen. Siehe Abschnitt~\ref{sec:motion-setup}. Der folgende Ablauf beschreibt die X-Ausrichtung am Dual-Relay-Prüfstand.
 
 \begin{description}
   \item[Messen.] Die Phasenkorrelation in OpenCV vergleicht das Livebild mit
@@ -189,14 +189,7 @@ Bewegung.
 
 \subsection{Ausrichtung beurteilen}
 
-\Hinweis{Korrektur der X-Achse.}{Die Motorachse korrigiert ausschließlich
-X. Ein verbleibender Y-Versatz wird mit diesem Joystick-Ablauf nicht korrigiert.
-Liegt Y außerhalb der Vorgabe, ist die Einrichtung zu prüfen.}
-
-Die eingestellte \textbf{Tolerance} gilt für den gesamten Abstand aus X und Y.
-Bei einer Toleranz von 1~px liegen beispielsweise X~=~0,8~px und Y~=~0,8~px
-zusammen noch außerhalb. Maßgeblich ist der Status; die Zahlenanzeige ist leicht
-geglättet.
+Beim Quad Relay gilt die Toleranz für jede Achse einzeln. Bei 1~px Toleranz liegen je 0,8~px Versatz auf beiden Achsen innerhalb der Vorgabe. Am Dual-Relay-Prüfstand korrigiert Align X die horizontale Achse, die Gesamtanzeige bewertet den geradlinigen Abstand. Die Zahlenanzeige ist leicht geglättet.
 
 \Hinweis{Rechnerische Vorschau.}{Ansichten mit \textbf{Compensated} verschieben
 das Bild nur rechnerisch. Eine passende Vorschau bestätigt deshalb keine
@@ -226,7 +219,9 @@ Eine neue Aufnahme ersetzt das bisherige Sollbild. Prüfen Sie deshalb die
 Position vor der Aufnahme. Nehmen Sie nach einem Neustart die benötigte
 Referenz wieder über den Joystick auf.
 
-\subsection{Direkte X-Ausrichtung starten}
+\subsection{Ausrichtung starten}
+
+Beim Quad Relay den Ausrichttaster drücken oder \textbf{Align XY} anklicken. Die folgenden Angaben gelten für das Dual Relay.
 
 Drücken Sie den \Ausrichten{} einmal und lassen Sie ihn wieder los oder
 klicken Sie auf \textbf{Align X}. Die Anwendung vergleicht den X-Versatz nach
@@ -245,16 +240,22 @@ Endposition.
 
 \subsection{Laufenden Vorgang abbrechen}
 
-Um eine laufende Kalibrierung oder automatische Ausrichtung abzubrechen,
-lenken Sie den Joystick kurz in eine Fahrtrichtung aus und lassen Sie ihn
-wieder los. Der automatische Vorgang wird abgebrochen. Warten Sie Stillstand
-und Neutralstellung ab, bevor Sie erneut verfahren oder den \Ausrichten{}
-betätigen. Das Loslassen des Ausrichttasters allein bricht einen laufenden
-Vorgang nicht ab.
+Zum Abbrechen der automatischen Ausrichtung oder Kalibrierung \textbf{STOP} drücken. Vor der Bedienung des Maschinenjoysticks den Stillstand abwarten. Nur am Dual-Relay-Prüfstand erfasst die Anwendung die Richtungseingänge des Joysticks.
 
 \newpage
 \section{Motion Setup}
 \label{sec:motion-setup}
+\subsection{Quad Relay und Ausrichtung beider Achsen}
+Neuinstallationen verwenden das Quad Relay \texttt{2imB}. Die Ausgänge 0, 1, 2
+und 3 betätigen die Maschinenkontakte für rechts, links, oben und unten.
+Am Digital In \texttt{27s4} löst eine steigende Flanke an Eingang 0 die
+Referenzaufnahme und an Eingang 3 die XY-Ausrichtung aus. Eingänge 1 und 2 sind frei.
+Der Joystick bleibt an der Maschine angeschlossen. Die vier Pfeiltasten lösen
+einzelne Schritte aus. Vor der Bedienung des Maschinenjoysticks STOP drücken,
+da die Anwendung seine Bewegung nicht erkennt.
+Die XY-Ausrichtung beginnt mit dem größeren Versatz und prüft nach jedem Impuls
+beide Achsen. Drei neue gültige Bilder innerhalb der Toleranz je Achse bestätigen
+die Ausrichtung.
 
 Öffnen Sie \textbf{Tools} $\rightarrow$ \textbf{Motion Setup}, um den
 Einstellungsbereich anzuzeigen. Warten Sie vor Änderungen, bis die Achse
@@ -263,7 +264,7 @@ Kalibrierung oder automatische Ausrichtung ab. Verbindungseinstellungen,
 Impulszeiten, Wiederholrate und Testimpulsanzahl werden jeweils nach der Eingabe
 übernommen.
 
-\subsection{Verdrahtung der externen Maschine}
+\subsection{Verdrahtung am Prüfstand mit Dual Relay}
 \label{sec:wiring}
 
 \begin{center}
@@ -278,7 +279,7 @@ Impulszeiten, Wiederholrate und Testimpulsanzahl werden jeweils nach der Eingabe
 Klicken Sie auf \textbf{Disconnect hardware}, bevor Sie die
 Verbindungseinstellungen ändern. Geben Sie \textbf{Host} und
 \textbf{Port} des Brick Daemon (Standard \texttt{localhost} und \texttt{4223})
-sowie die \textbf{Dual Relay UID} ein. Lassen Sie \textbf{Digital In UID} für
+sowie die \textbf{Relay UID} ein. Lassen Sie \textbf{Digital In UID} für
 den Betrieb ohne physische Joystick-Eingänge leer. Klicken Sie anschließend
 auf \textbf{Connect hardware}.
 
@@ -329,7 +330,7 @@ Prüfen Sie bei einer Unterbrechung beide Anzeigen.
 \toprule
 \textbf{Anzeige} & \textbf{Bedeutung und nächster Schritt} \\
 \midrule
-\Status{ALIGNED} & Der gesamte Bildversatz liegt innerhalb der eingestellten Toleranz. Bildüberdeckung prüfen. \\
+\Status{ALIGNED} & Das Toleranzkriterium des gewählten Aufbaus ist erfüllt. Bildüberdeckung prüfen. \\
 \addlinespace
 \Status{X aligned} & X ist ausgerichtet. Zusätzlich Y und den Gesamtstatus prüfen. \\
 \addlinespace

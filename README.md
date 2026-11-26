@@ -11,7 +11,7 @@ switch immediately. The app remembers your choice for the next launch.
 
 For everyday operation, see the [German user manual (PDF)](docs/benutzerhandbuch-de.pdf).
 It assumes a configured camera and axis controller. Relay contacts request
-axis nudges, and digital inputs can trigger reference capture and X alignment.
+axis nudges, and digital inputs can trigger reference capture and alignment.
 Edit the [LaTeX source](docs/benutzerhandbuch-de.tex), or use the
 [complete LaTeX source archive](docs/benutzerhandbuch-de-latex.zip).
 With pdfLaTeX installed, rebuild the PDF and archive using
@@ -340,9 +340,65 @@ Install the optional motion bindings in the same environment as the app:
 .venv/bin/python -m pip install -c requirements-lock.txt -e '.[motion]'
 ```
 
-In **Tools → Motion Setup**, set
-the Brick Daemon host and port, Dual Relay UID and optional Digital In UID.
-Defaults are `localhost:4223`, relay **2j7T**, and Digital In **27s4**. The
+New installations use the **Quad Relay** setup at `localhost:4223`. Open
+**Tools → Motion Setup** to check the Bricklet UIDs for your installation.
+
+| Device | Channel | Connection |
+| --- | --- | --- |
+| Digital In **27s4** | 0 | Capture Reference on a rising edge |
+| Digital In **27s4** | 3 | Align XY on a rising edge |
+| Digital In **27s4** | 1, 2 | Spare |
+| Quad Relay **2imB** | 0, 1, 2, 3 | Right, Left, Up, Down machine joystick contacts respectively |
+
+The machine joystick stays wired to the machine. Use the four arrow keys for app-controlled
+nudges. Verify each contact assignment before running **Align XY**. Press **STOP** before
+taking over with the physical joystick because the app cannot sense its position.
+
+**Align XY** starts on the axis with the larger absolute offset (X on a tie).
+After each timed pulse it reads both axes from a fresh, settled image. It stays
+on the active axis until that axis reaches tolerance, then corrects the other
+axis if needed. It can revisit an axis displaced by a later move. Three fresh,
+valid frames with both axes individually within tolerance confirm alignment.
+Pixel calibration still measures X movement per right press.
+
+### Two-Master factory simulator (bench test only)
+
+Run from the repository root with Brick Daemon running. The simulator checks the
+parent UID of each Bricklet. Master **64tBhw** drives Quad Relay **2imB**.
+Master **6k2K8q** receives its four outputs on Digital In **2gna** and drives
+Silent Stepper 2.0 **2eke**. Wire OUT 0–3 to the same numbered IN 0–3,
+active HIGH. Digital In **27s4** stays available for the app's usual triggers.
+
+```bash
+.venv/bin/python tests/factory_machine.py check
+.venv/bin/python tests/factory_machine.py test --axis x
+```
+
+`check` reads device identities, inputs and motor status. For `test`, disconnect
+the app's motion hardware and leave Brick Daemon running so the command controls
+the outputs. It sends one 80 ms pulse each for Right, Left, Up and Down,
+checks the matching input and release, and verifies the stepper driver's signed
+position change. X maps Right/Left to −8/+8 microsteps. Use `--axis y` to
+map Up/Down to −8/+8 instead. The other two contacts must produce zero motor
+steps. The test retains the driver's configured current limit and disables the
+motor on exit. Driver counts verify the requested travel; mechanical travel is
+observable on the bench.
+
+To use the desktop app as the pulse source, connect it to Quad Relay **2imB**
+and run the receiver in a second terminal:
+
+```bash
+.venv/bin/python tests/factory_machine.py listen --axis x
+```
+
+Press the app's arrow keys to exercise the contacts, or use its alignment
+trigger. The listener reports each received direction. Ctrl-C ends the listener.
+A camera alignment test with one motor can correct the mounted axis only.
+
+### Dual-relay bench setup
+
+Existing dual-relay profiles retain their UIDs and direction inputs. The default
+bench relay UID is **2j7T** and the Digital In UID is **27s4**. The
 app connects at startup and waits for the controls to be released. Use
 **Connect hardware** to disconnect or retry. Loading a settings profile
 disconnects hardware until you reconnect.
@@ -385,7 +441,7 @@ If X is outside tolerance, alignment starts with one right relay nudge. It
 waits for relay release and camera settling, then compares the new signed
 `dx` with the previous measurement. It continues in the same direction
 when the error shrinks, and reverses when the error grows or crosses zero.
-The app checks for repeated endpoints and stops after 10 nudges without
+The app checks for repeated endpoints and stops after 4 nudges without
 progress, 100 corrections, or 60 seconds. Three fresh, valid measurements
 inside the configured tolerance confirm alignment. Camera feedback uses a
 freshness barrier and at least 200 ms of settling after the nudge interval.
