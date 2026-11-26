@@ -26,14 +26,14 @@ def clock(monkeypatch):
     return clock
 
 
-@pytest.mark.parametrize("axis,deltas", [("x", [-8, 8, 0, 0]), ("y", [0, 0, -8, 8])])
-def test_four_contacts_one_physical_axis(clock, capsys, axis, deltas):
+@pytest.mark.parametrize("axis,steps,deltas", [("x", 8, [-8, 8, 0, 0]), ("rotation", 32, [0, 0, -32, 32])])
+def test_four_contacts_one_physical_axis(clock, capsys, axis, steps, deltas):
     device = Mock()
     device.position = 2**31 - 1
     device.get_current_position.side_effect = lambda: device.position
     device.get_all_data.return_value = SimpleNamespace(current_velocity=0, remaining_steps=0, input_voltage=24000)
     device.get_driver_status.return_value = SimpleNamespace(short_to_ground=False, over_temperature=0, motor_stalled=False)
-    bench = SilentStepperBench(device)
+    bench = SilentStepperBench(device, steps_per_nudge=steps)
 
     def drive(steps):
         device.position = (device.position + steps + 2**31) % 2**32 - 2**31
@@ -44,7 +44,7 @@ def test_four_contacts_one_physical_axis(clock, capsys, axis, deltas):
         rig.receive_press(lambda: channel if clock.now < start + .08 else None,
                           bench, device, axis, expected=channel)
         assert f"driver delta {delta:+d}" in capsys.readouterr().out
-    assert [call.args[0] for call in device.set_steps.call_args_list] == [-8, 8]
+    assert [call.args[0] for call in device.set_steps.call_args_list] == [-steps, steps]
 
 
 @pytest.mark.parametrize("inputs,match", [
@@ -98,8 +98,9 @@ def test_two_master_command_and_cleanup(monkeypatch, clock, mode, broken):
     connection = Mock()
     monkeypatch.setattr(sdk, "IPConnection", lambda: connection)
     sender = Mock()
-    devices = {uid: Mock() for uid in (rig.RELAY, rig.DIGITAL, rig.MOTOR)}
+    devices = {uid: Mock() for uid in (rig.RELAY, rig.DIGITAL, rig.MOTOR, rig.ROTATION_MOTOR)}
     digital, motor = devices[rig.DIGITAL], devices[rig.MOTOR]
+    rotary = devices[rig.ROTATION_MOTOR]
     monkeypatch.setattr(rig, "identify", lambda uid, master, conn, *models: devices[uid])
     monkeypatch.setattr(rig, "TinkerforgeMotionHardware", lambda: sender)
 
@@ -121,7 +122,16 @@ def test_two_master_command_and_cleanup(monkeypatch, clock, mode, broken):
     motor.set_steps.side_effect = lambda steps: setattr(motor.get_current_position, "return_value",
                                                         motor.get_current_position.return_value + steps)
     motor.set_enabled.side_effect = lambda enabled: setattr(motor.get_enabled, "return_value", enabled)
-    args = SimpleNamespace(mode=mode, axis="x", host="localhost", port=4223)
+    rotary.get_enabled.return_value = False
+    rotary.get_current_velocity.return_value = 0
+    rotary.get_motor_current.return_value = 800
+    rotary.get_all_data.return_value = motor.get_all_data.return_value
+    rotary.get_driver_status.return_value = motor.get_driver_status.return_value
+    rotary.get_current_position.return_value = 0
+    rotary.set_steps.side_effect = lambda steps: setattr(rotary.get_current_position, "return_value",
+                                                         rotary.get_current_position.return_value + steps)
+    rotary.set_enabled.side_effect = lambda enabled: setattr(rotary.get_enabled, "return_value", enabled)
+    args = SimpleNamespace(mode=mode, axis="both", host="localhost", port=4223)
     if broken:
         with pytest.raises(MotionHardwareError, match="OUT 0: no closure"):
             rig.run(args)
@@ -137,3 +147,5 @@ def test_two_master_command_and_cleanup(monkeypatch, clock, mode, broken):
             (ch, 80) for ch in range(1 if broken else 4)]
         assert not motor.get_enabled.return_value
         assert [call.args[0] for call in motor.set_steps.call_args_list] == ([] if broken else [-8, 8])
+        assert [call.args[0] for call in rotary.set_steps.call_args_list] == ([] if broken else [-32, 32])
+        assert not rotary.get_enabled.return_value

@@ -8,11 +8,12 @@ from .motion_hardware import MotionHardwareError
 
 
 class SilentStepperBench:
-    # One full motor step per press, using the bench's 1/8 microstep setting.
+    # Default X nudge, in 1/32 microsteps.
     STEPS_PER_NUDGE = 8
 
-    def __init__(self, device):
+    def __init__(self, device, *, steps_per_nudge=STEPS_PER_NUDGE):
         self._device = device
+        self.STEPS_PER_NUDGE = steps_per_nudge
 
     def setup(self) -> None:
         device = self._device

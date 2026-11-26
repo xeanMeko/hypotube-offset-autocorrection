@@ -365,35 +365,35 @@ Pixel calibration still measures X movement per right press.
 
 Run from the repository root with Brick Daemon running. The simulator checks the
 parent UID of each Bricklet. Master **64tBhw** drives Quad Relay **2imB**.
-Master **6k2K8q** receives its four outputs on Digital In **2gna** and drives
-Silent Stepper 2.0 **2eke**. Wire OUT 0–3 to the same numbered IN 0–3,
+Master **6k2K8q** receives its four outputs on Digital In **2gna**.
+Silent Stepper 2.0 **2eke** drives X translation and **2ek7** drives rotation;
+each stepper can be attached to either of these Masters. Wire OUT 0–3 to the same numbered IN 0–3,
 active HIGH. Digital In **27s4** stays available for the app's usual triggers.
 
 ```bash
 .venv/bin/python tests/factory_machine.py check
-.venv/bin/python tests/factory_machine.py test --axis x
+.venv/bin/python tests/factory_machine.py test
 ```
 
 `check` reads device identities, inputs and motor status. For `test`, disconnect
 the app's motion hardware and leave Brick Daemon running so the command controls
 the outputs. It sends one 80 ms pulse each for Right, Left, Up and Down,
-checks the matching input and release, and verifies the stepper driver's signed
-position change. X maps Right/Left to −8/+8 microsteps. Use `--axis y` to
-map Up/Down to −8/+8 instead. The other two contacts must produce zero motor
-steps. The test retains the driver's configured current limit and disables the
-motor on exit. Driver counts verify the requested travel; mechanical travel is
+checks the matching input and release, and verifies the selected stepper driver's signed
+position change. By default, Right/Left move X by −8/+8 microsteps and Up/Down
+move rotation by −32/+32 microsteps. Use `--axis x` or `--axis rotation` to
+exercise only one motor (`--axis y` remains an alias for rotation). The test retains
+each driver's configured current limit and disables both motors on exit. Driver counts verify the requested travel; mechanical travel is
 observable on the bench.
 
 To use the desktop app as the pulse source, connect it to Quad Relay **2imB**
 and run the receiver in a second terminal:
 
 ```bash
-.venv/bin/python tests/factory_machine.py listen --axis x
+.venv/bin/python tests/factory_machine.py listen
 ```
 
 Press the app's arrow keys to exercise the contacts, or use its alignment
 trigger. The listener reports each received direction. Ctrl-C ends the listener.
-A camera alignment test with one motor can correct the mounted axis only.
 
 ### Dual-relay bench setup
 
