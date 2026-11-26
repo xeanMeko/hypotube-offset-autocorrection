@@ -1,4 +1,4 @@
-"""Qt controls for the single linear axis; hardware stays in the motion worker."""
+"""Qt controls for machine motion; hardware stays in the motion worker."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -17,12 +17,12 @@ MOTION_SETUP_TITLE = "Motion Setup"
 class AxisKeyboardFilter(QtCore.QObject):
     """Merge physical key state rather than relying on operating-system repeat."""
 
-    changed = QtCore.Signal(bool, bool)
+    changed = QtCore.Signal(bool, bool, bool, bool)
 
     def __init__(self, window):
         super().__init__(window)
         self.window = window
-        self.left = self.right = False
+        self.left = self.right = self.up = self.down = False
 
     @staticmethod
     def editing(widget):
@@ -36,9 +36,9 @@ class AxisKeyboardFilter(QtCore.QObject):
         return False
 
     def clear(self):
-        if self.left or self.right:
-            self.left = self.right = False
-            self.changed.emit(False, False)
+        if self.left or self.right or self.up or self.down:
+            self.left = self.right = self.up = self.down = False
+            self.changed.emit(False, False, False, False)
 
     def eventFilter(self, watched, event):
         kind = event.type()
@@ -52,7 +52,11 @@ class AxisKeyboardFilter(QtCore.QObject):
         if kind not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease,
                         QtCore.QEvent.Type.ShortcutOverride):
             return False
-        if event.key() not in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Right):
+        keys = {QtCore.Qt.Key.Key_Left: "left", QtCore.Qt.Key.Key_Right: "right"}
+        dock = getattr(self.window, "motion_dock", None)
+        if dock is not None and dock.config.quad_relay:
+            keys.update({QtCore.Qt.Key.Key_Up: "up", QtCore.Qt.Key.Key_Down: "down"})
+        if event.key() not in keys:
             return False
         app = QtWidgets.QApplication.instance()
         eligible = (app.activeWindow() is self.window and app.activeModalWidget() is None
@@ -71,13 +75,10 @@ class AxisKeyboardFilter(QtCore.QObject):
         if event.isAutoRepeat():
             return True
         pressed = kind == QtCore.QEvent.Type.KeyPress
-        previous = self.left, self.right
-        if event.key() == QtCore.Qt.Key.Key_Left:
-            self.left = pressed
-        else:
-            self.right = pressed
-        if previous != (self.left, self.right):
-            self.changed.emit(self.left, self.right)
+        key = keys[event.key()]
+        if getattr(self, key) != pressed:
+            setattr(self, key, pressed)
+            self.changed.emit(self.left, self.right, self.up, self.down)
         event.accept()
         return True
 
@@ -95,10 +96,9 @@ class MotionControls(QtCore.QObject):
         self.ui.bind(self.connect_button.setToolTip, "Connect the joystick interface and enable movement. Release held directions before moving. Toggle off to stop and disconnect.")
         self.connection_revision = 0
         self.usb_setup_pending = False
-        self.align_button = self.ui.button("Align X")
+        self.align_button = self.ui.button("Align XY")
         self.align_button.setObjectName("alignXButton")
-        self.ui.bind(self.align_button.setToolTip,
-            "Use a fresh camera measurement after each relay nudge to align X to the reference.")
+        self.set_quad_relay(True)
         self.stop_button = self.ui.button("STOP")
         self.stop_button.setObjectName("axisStopButton")
         for button in (self.connect_button, self.align_button, self.stop_button):
@@ -114,6 +114,13 @@ class MotionControls(QtCore.QObject):
         self.status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         for button in (self.align_button, self.stop_button):
             button.setEnabled(False)
+
+    def set_quad_relay(self, quad):
+        self.ui.bind(self.align_button.setText, "Align XY" if quad else "Align X")
+        self.ui.bind(self.align_button.setToolTip,
+                     "Align both axes to the reference, starting with the larger displacement."
+                     if quad else
+                     "Use a fresh camera measurement after each relay nudge to align X to the reference.")
 
     def _connection_caption(self, connected):
         if self.compact:
@@ -182,7 +189,7 @@ class PulsePreview(QtWidgets.QWidget):
 
     @property
     def release_ms(self):
-        floor = INPUT_DEBOUNCE_S * 1000 if self.config.digital_uid else 0
+        floor = INPUT_DEBOUNCE_S * 1000 if self.config.digital_uid and not self.config.quad_relay else 0
         return max(self.config.release_ms, floor)
 
     @property
@@ -277,9 +284,11 @@ class MotionDock(QtWidgets.QDockWidget):
         self.ui.bind(self.digital_uid.setToolTip, "Leave empty for relay-only operation without digital input triggers.")
         for label, control in (("Host", self.host), ("Port", self.port),
                                ("Digital In UID", self.digital_uid),
-                               ("Dual Relay UID", self.output_uid)):
+                               ("Relay UID", self.output_uid)):
             form.addRow(self.ui.label(label), control)
-        form.addRow(self.ui.label("Relay A0 → IN 1     ·     Relay A1 → IN 2"))
+        self.wiring_hint = QtWidgets.QLabel()
+        self.wiring_hint.setWordWrap(True)
+        form.addRow(self.wiring_hint)
         layout.addWidget(connection)
 
         inputs = self.ui.group("Digital inputs")
@@ -296,7 +305,7 @@ class MotionDock(QtWidgets.QDockWidget):
             for channel in range(4):
                 control.addItem(f"Channel {channel}", channel)
         self.ui.bind(self.reference_channel.setToolTip, "Capture the current reference on LOW → HIGH, at most once per second. Independent of joystick polarity.")
-        self.ui.bind(self.align_channel.setToolTip, "Start direct X alignment on LOW → HIGH. Requires a live camera, a reference, and enabled movement.")
+        self.ui.bind(self.align_channel.setToolTip, "Start alignment on LOW → HIGH.")
         self.active_high = self.ui.check("Joystick active high")
         self.apply_inputs_button = self.ui.button("Apply digital inputs")
         self.ui.bind(self.apply_inputs_button.setToolTip, "Apply all channel assignments and joystick polarity together.")
@@ -304,12 +313,14 @@ class MotionDock(QtWidgets.QDockWidget):
         form.addRow(self.ui.label("Left"), self.left_channel)
         form.addRow(self.ui.label("Right"), self.right_channel)
         form.addRow(self.ui.label("Reference capture"), self.reference_channel)
-        form.addRow(self.ui.label("Align X"), self.align_channel)
+        self.align_label = self.ui.label("Align X")
+        form.addRow(self.align_label, self.align_channel)
         form.addRow(self.active_high)
         form.addRow(self.apply_inputs_button)
-        hint = self.ui.label("Reference and Align X trigger on LOW → HIGH. Release before pressing again.")
-        hint.setWordWrap(True)
-        form.addRow(hint)
+        self.input_form = form
+        self.input_hint = QtWidgets.QLabel()
+        self.input_hint.setWordWrap(True)
+        form.addRow(self.input_hint)
         form.addRow(self.ui.label("Raw inputs"), self.inputs)
         layout.addWidget(inputs)
 
@@ -445,6 +456,14 @@ class MotionDock(QtWidgets.QDockWidget):
         self._syncing = True
         try:
             self._config = config
+            self.ui.bind(self.wiring_hint.setText, "Relay outputs: 0 right, 1 left, 2 up, 3 down"
+                         if config.quad_relay else "Relay A0 → IN 1     ·     Relay A1 → IN 2")
+            for control in (self.left_channel, self.right_channel, self.active_high):
+                self.input_form.setRowVisible(control, not config.quad_relay)
+            self.ui.bind(self.arm_button.setText, "Enable movement" if config.quad_relay else "Enable joystick")
+            self.ui.bind(self.align_label.setText, "Align XY" if config.quad_relay else "Align X")
+            self.ui.bind(self.input_hint.setText, "Stop alignment before using the machine joystick."
+                         if config.quad_relay else "Reference and Align X trigger on LOW → HIGH. Release before pressing again.")
             self.pulse_ms.setValue(config.pulse_ms)
             self.release_ms.setValue(config.release_ms)
             for control, value in ((self.host, config.host),

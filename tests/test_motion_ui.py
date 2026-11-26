@@ -63,10 +63,32 @@ class FakeHardware(JoystickHarness):
         self.calls.append("shutdown")
 
 
+class QuadHardware(FakeHardware):
+    position_y = 0
+
+    def press_output(self, channel, duration_ms):
+        self.pulses.append((channel, duration_ms))
+        if channel < 2:
+            self.position += self.nudge if channel == 1 else -self.nudge
+        else:
+            self.position_y += self.nudge if channel == 3 else -self.nudge
+
+    def read_inputs(self):
+        return self.inputs
+
+
 @pytest.fixture
-def axis_window(application):
+def axis_window(application, tmp_path, request):
+    from measure_shift.models import MatchConfig
+    from measure_shift.storage import save_profile
+
     hardware = FakeHardware()
-    window = MainWindow(motion_hardware=hardware)
+    settings = tmp_path / "dual-relay.json"
+    if getattr(request, "param", "dual") == "quad":
+        hardware = QuadHardware()
+    else:
+        save_profile(settings, MatchConfig(), 1, 1, motion=MotionConfig().to_dict())
+    window = MainWindow(motion_hardware=hardware, settings_path=settings)
     window.show()
     window.activateWindow()
     pump(application, lambda: window._motion_status and window._motion_status.phase == "ready", timeout=3, required=True)
@@ -736,9 +758,11 @@ def test_real_app_relay_calibration_and_digital_alignment(
 
 @pytest.mark.parametrize("gain", [.5, -.5])
 @pytest.mark.parametrize("trigger", ["toolbar", "digital"])
+@pytest.mark.parametrize("axis_window", ["dual", "quad"], indirect=True)
 def test_real_app_direct_alignment_without_calibration(axis_window, application, monkeypatch, gain, trigger):
     import measure_shift.app as app_module
     window, hardware = axis_window
+    quad = window.motion_dock.config.quad_relay
     rng = np.random.default_rng(713)
     reference = cv2.GaussianBlur(rng.integers(20, 235, (128, 160), dtype=np.uint8), (3, 3), 0)
 
@@ -754,7 +778,8 @@ def test_real_app_direct_alignment_without_calibration(axis_window, application,
         def read(self, timeout_ms=200):
             time.sleep(.01)
             dx = 12 + hardware.position * gain
-            return cv2.warpAffine(reference, np.float32([[1, 0, dx], [0, 1, 4]]), (160, 128))
+            dy = 4 + hardware.position_y * .5 if quad else 4
+            return cv2.warpAffine(reference, np.float32([[1, 0, dx], [0, 1, dy]]), (160, 128))
 
         def discard_pending_frames(self):
             self.freshen_count += 1
@@ -777,11 +802,16 @@ def test_real_app_direct_alignment_without_calibration(axis_window, application,
         hardware.inputs = (False, False, False, True)
     pump(application, lambda: window._motion_status.phase == "aligning", timeout=3, required=True)
     assert not window.motion_controls.align_button.isEnabled()
-    pump(application, lambda: "X aligned" in window._motion_status.message, timeout=8, required=True)
+    expected = "XY aligned" if quad else "X aligned"
+    pump(application, lambda: window._motion_status.message == expected, timeout=8, required=True)
     assert hardware.pulses[0] == (0, 80)
     assert all(duration == 80 for _, duration in hardware.pulses)
     assert abs(window.last_pair.result.dx) <= window.tolerance.value()
-    assert window.last_pair.result.dy > 2
+    if quad:
+        assert abs(window.last_pair.result.dy) <= window.tolerance.value()
+        assert any(channel == 2 for channel, _ in hardware.pulses)
+    else:
+        assert window.last_pair.result.dy > 2
     assert window.reference is saved_reference
     assert window.motion_dock.config == original_config
     assert camera.freshen_count > 1
@@ -917,3 +947,44 @@ def test_startup_usb_authorization_precedes_connection(application, monkeypatch,
     finally:
         respond.set()
         window.close()
+
+
+def test_quad_arrows_and_spare_inputs(application, tmp_path):
+    machine = QuadHardware()
+    machine.inputs = False, True, True, False
+    window = MainWindow(motion_hardware=machine, settings_path=tmp_path / "quad.json")
+    try:
+        window.show()
+        window.activateWindow()
+        window.live_pane.plot.setFocus()
+        pump(application, lambda: window._motion_status and window._motion_status.phase == "ready",
+             timeout=3, required=True)
+        assert window.motion_dock.config == MotionConfig.quad_defaults()
+        assert window.motion_controls.align_button.text() == "XY ausrichten"
+        assert machine.pulses == []
+        for channel, key in enumerate((QtCore.Qt.Key.Key_Right, QtCore.Qt.Key.Key_Left,
+                                       QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down)):
+            QtTest.QTest.keyPress(window, key)
+            pump(application, lambda: len(machine.pulses) > channel, timeout=1, required=True)
+            QtTest.QTest.keyRelease(window, key)
+            assert machine.pulses[-1] == (channel, 80)
+            pump(application, lambda: window._motion_status.phase == "ready", timeout=1, required=True)
+        assert len(machine.pulses) == 4
+    finally:
+        window.close()
+
+
+def test_motion_setup_restores_quad_triggers_and_legacy_wiring(application):
+    dock = MotionDock(MotionConfig.quad_defaults())
+    legacy = MotionConfig.from_dict({"output_uid": "2j7T", "pulse_ms": 125})
+    assert all(box.findData("Quad Relay") == -1 for box in dock.findChildren(QtWidgets.QComboBox))
+    assert dock.left_channel.isHidden() and dock.right_channel.isHidden()
+    dock.reference_channel.setCurrentIndex(dock.reference_channel.findData(1))
+    dock.align_channel.setCurrentIndex(dock.align_channel.findData(2))
+    dock.apply_inputs_button.click()
+    restored = MotionConfig.from_dict(dock.config.to_dict())
+    assert restored.quad_relay and (restored.reference_channel, restored.align_channel) == (1, 2)
+    dock.set_config(legacy)
+    assert not dock.left_channel.isHidden() and not dock.right_channel.isHidden()
+    assert dock.config == legacy
+    dock.close()

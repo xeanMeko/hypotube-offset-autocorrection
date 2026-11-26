@@ -249,6 +249,38 @@ GERMAN = {
         "Verbindet die Joystick-Schnittstelle und gibt die Bewegung frei. Lassen Sie zuvor beide Richtungstasten los. Erneutes Betätigen stoppt die Bewegung und trennt die Verbindung.",
     "Run pixel calibration": "Pixelkalibrierung starten",
     "Calibrate": "Kalibrieren",
+    "Invalid relay type": "Ungültiger Relaistyp",
+    "Invalid joystick direction": "Ungültige Joystickrichtung",
+    "Alignment channel must be disabled or between 0 and 3": "Ausrichtkanal deaktivieren oder einen Wert von 0 bis 3 wählen.",
+    "Enable movement": "Bewegung freigeben",
+    "Restore the Quad Relay standalone group in Brick Viewer before moving":
+        "Vor dem Verfahren die Einzelgruppe des Quad Relay im Brick Viewer wiederherstellen.",
+    "Vertical movement requires a quad relay": "Für vertikale Bewegung ist ein Quad Relay erforderlich.",
+    "Align XY": "XY ausrichten",
+    "Relay outputs: 0 right, 1 left, 2 up, 3 down": "Relaisausgänge: 0 rechts, 1 links, 2 oben, 3 unten",
+    "Relay UID": "Relais-UID",
+    "Tolerance per axis": "Toleranz je Achse",
+    "Straight-line distance: {:.2f} px": "Gesamtabstand: {:.2f} px",
+    "Align both axes to the reference, starting with the larger displacement.":
+        "Beide Achsen an der Referenz ausrichten, beginnend mit dem größeren Versatz.",
+    "Start alignment on LOW → HIGH.": "Ausrichtung bei LOW → HIGH starten.",
+    "Stop alignment before using the machine joystick.": "Vor der Bedienung des Maschinenjoysticks die Ausrichtung stoppen.",
+    "Align XY and reference capture must use different digital inputs":
+        "XY-Ausrichtung und Referenzaufnahme benötigen unterschiedliche Eingänge.",
+    "XY aligned": "Beide Achsen ausgerichtet",
+    "Aligning Y": "Y wird ausgerichtet",
+    "Crossed Y target · reversing": "Y-Ziel überschritten · Richtung wird gewechselt",
+    "Requested Y tolerance is smaller than one joystick nudge can resolve":
+        "Die angeforderte Y-Toleranz ist kleiner als ein Joystickschritt.",
+    "Direct Y alignment stopped after 4 joystick nudges without progress":
+        "Y-Ausrichtung nach vier Joystickschritten ohne Fortschritt gestoppt.",
+    "XY alignment reached its 100 correction limit": "Grenze von 100 XY-Korrekturen erreicht",
+    "XY is within tolerance; waiting for a valid match to confirm alignment":
+        "Beide Achsen liegen innerhalb der Toleranz. Warten auf eine gültige Bestätigungsmessung.",
+    "Nudging up": "Schritt nach oben",
+    "Nudging down": "Schritt nach unten",
+    "up": "nach oben",
+    "down": "nach unten",
     "Align X": "X ausrichten",
     "Use a fresh camera measurement after each relay nudge to align X to the reference.":
         "Richtet die X-Achse mit einer neuen Kameramessung nach jedem Verfahrschritt an der Referenz aus.",
@@ -657,6 +689,7 @@ GERMAN = {
 
 # Fully formatted messages received from the acquisition and motion workers.
 WORKER_TEMPLATES = (
+    (r"UID (?P<uid>\S+) is not a Quad Relay Bricklet", "UID {uid} gehört zu keinem Quad Relay Bricklet."),
     (r"Tinkerforge bindings are unavailable\. Install measure-shift\[motion\] in this environment\. Details: (?P<detail>.+)",
      "Tinkerforge-Anbindung nicht verfügbar. Installieren Sie measure-shift[motion] in dieser Umgebung. Details: {detail}"),
     (r"Motion Bricklet (?P<uid>\S+) was disconnected; reconnect before moving",
@@ -700,8 +733,8 @@ WORKER_TEMPLATES = (
      "Kalibrierimpuls {step}/{total}"),
     (r"Pixel calibration saved: (?P<scale>\S+) px/right press",
      "Pixelkalibrierung gespeichert: {scale} px pro Tastendruck nach rechts"),
-    (r"Confirming X alignment \((?P<count>\d+)/3\)",
-     "X-Ausrichtung wird bestätigt ({count}/3)"),
+    (r"Confirming (?P<axis>XY|X) alignment \((?P<count>\d+)/3\)",
+     "{axis}-Ausrichtung wird bestätigt ({count}/3)"),
     (r"(?P<label>.+) · correction (?P<count>\d+) \((?P<direction>\w+)\) · uncertain match at large offset",
      "{label} · Korrektur {count} ({direction}) · unsichere Messung bei großem Versatz"),
     (r"(?P<label>.+) · correction (?P<count>\d+) \((?P<direction>\w+)\)",

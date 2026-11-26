@@ -131,13 +131,14 @@ def test_readout_smooths_unique_frames_and_resumes_without_old_samples(window, m
         expected = ("X   +0.3 px", "Y   -0.3 px")
         assert (window.x_value.text(), window.y_value.text()) == expected
         # Display smoothing must not change the tolerance decision or the stored result.
-        assert window.state.text() == "AUSSER TOLERANZ"
+        assert window.state.text() == "AUSGERICHTET"
         assert (window.last_pair.result.dx, window.last_pair.result.dy) == (.44, -.44)
         for _ in range(8):
             window._update_readout()
         assert (window.x_value.text(), window.y_value.text()) == expected
 
         show_reading(.05, .64, -.64)
+        assert window.state.text() == "AUSSER TOLERANZ"
         assert (window.x_value.text(), window.y_value.text()) == ("X   +0.4 px", "Y   -0.4 px")
         show_reading(.08, .64, -.64)
         expected = ("X   +0.6 px", "Y   -0.6 px")

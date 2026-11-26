@@ -1,4 +1,4 @@
-"""One logical left/right press is one finite machine nudge."""
+"""One logical direction press is one finite machine nudge."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 class Direction(IntEnum):
     LEFT = -1
     RIGHT = 1
+    UP = 2
+    DOWN = -2
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class JoystickPort(Protocol):
 
 # Digital In 1 is wired to relay contact A0, Digital In 2 to A1.
 RELAY_FOR_INPUT = {1: 0, 2: 1}
+QUAD_OUTPUT = {Direction.RIGHT: 0, Direction.LEFT: 1, Direction.UP: 2, Direction.DOWN: 3}
 INPUT_DEBOUNCE_S = .03
 
 
@@ -81,12 +84,18 @@ class WiredJoystick:
 
     def connect(self) -> None:
         cfg = self._config()
-        self._bench = self._hardware.connect(cfg.host, cfg.port, cfg.digital_uid or None, cfg.output_uid)
+        args = cfg.host, cfg.port, cfg.digital_uid or None, cfg.output_uid
+        if cfg.quad_relay:
+            self._hardware.connect(*args, True)
+        else:
+            self._bench = self._hardware.connect(*args)
 
     def read_inputs(self) -> tuple[bool, bool, bool, bool]:
         cfg = self._config()
         levels = list(self._hardware.read_inputs())
         self.raw_inputs = tuple(levels)
+        if cfg.quad_relay:
+            return self.raw_inputs
         if not cfg.digital_uid:
             levels[cfg.left_channel] = levels[cfg.right_channel] = not cfg.active_high
         if self._alignment is not None:
@@ -130,10 +139,18 @@ class WiredJoystick:
 
     def nudge(self, direction: Direction, *, alignment: bool = False) -> None:
         if not isinstance(direction, Direction):
-            raise ValueError("A joystick pulse must be LEFT or RIGHT")
+            raise ValueError("Invalid joystick direction")
         cfg = self._config()
         if self._alignment is not None or self._clock() < self._ready_at:
             raise MotionHardwareError("Wait for the joystick contact to release")
+        if cfg.quad_relay:
+            if not self._stop_requested():
+                self._hardware.press_output(QUAD_OUTPUT[direction], cfg.pulse_ms)
+                self._pulse_until = self._clock() + cfg.pulse_ms / 1000
+                self._ready_at = self._pulse_until + cfg.release_ms / 1000
+            return
+        if direction not in (Direction.LEFT, Direction.RIGHT):
+            raise MotionHardwareError("Vertical movement requires a quad relay")
         if {cfg.left_channel, cfg.right_channel} != RELAY_FOR_INPUT.keys():
             raise MotionHardwareError("The joystick output harness requires direction inputs 1 and 2")
         channel = cfg.right_channel if direction == Direction.RIGHT else cfg.left_channel

@@ -47,7 +47,7 @@ class SilentStepperBench:
             self._device.set_enabled(True)
 
     def nudge(self, direction: Direction) -> None:
-        if not isinstance(direction, Direction):
+        if not isinstance(direction, Direction) or direction not in (Direction.LEFT, Direction.RIGHT):
             raise ValueError("A bench nudge must be LEFT or RIGHT")
         self._device.set_steps(-int(direction) * self.STEPS_PER_NUDGE)
 

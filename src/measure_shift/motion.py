@@ -1,4 +1,4 @@
-"""Finite single-axis motion and camera-feedback alignment, independent of Qt.
+"""Finite joystick motion and camera-feedback alignment, independent of Qt.
 
 The controller is deterministic; only MotionWorker talks to a hardware adapter.
 Pixels remain camera pixels throughout. Neither jogging nor alignment modifies
@@ -13,13 +13,14 @@ import threading
 import time
 from typing import Callable
 
-from .direct_alignment import DirectXSearch
+from .direct_alignment import AxisSearch
 from .joystick import INPUT_DEBOUNCE_S, Direction, JoystickPort, JoystickState, WiredJoystick
 from .motion_hardware import MasterBrickAccessError, TinkerforgeMotionHardware
 from .workers import LatestValue, MeasurementWorker
 
 
 REFERENCE_CAPTURE_INTERVAL_S = 1.0
+KEY_DIRECTIONS = (Direction.LEFT, Direction.RIGHT, Direction.UP, Direction.DOWN)
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,16 @@ class MotionConfig:
     release_ms: int = 100
     pixels_per_right_press: float | None = None
 
+    # Profiles written before relay selection used the dual-relay harness.
+    quad_relay: bool = False
+
+    @classmethod
+    def quad_defaults(cls) -> MotionConfig:
+        return cls(quad_relay=True, output_uid="2imB")
+
     def validated(self) -> MotionConfig:
+        if type(self.quad_relay) is not bool:
+            raise ValueError("Invalid relay type")
         if not isinstance(self.host, str) or not self.host.strip():
             raise ValueError("Brick Daemon host is required")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
@@ -64,12 +74,14 @@ class MotionConfig:
             raise ValueError("Left and right must use different digital inputs")
         if self.reference_channel is not None and (type(self.reference_channel) is not int or self.reference_channel not in range(4)):
             raise ValueError("Reference capture channel must be disabled or between 0 and 3")
-        if self.reference_channel in (self.left_channel, self.right_channel):
+        if not self.quad_relay and self.reference_channel in (self.left_channel, self.right_channel):
             raise ValueError("Reference capture must use a different digital input from left and right")
         if self.align_channel is not None:
             if type(self.align_channel) is not int or self.align_channel not in range(4):
-                raise ValueError("Align X channel must be disabled or between 0 and 3")
-            if self.align_channel in (self.left_channel, self.right_channel, self.reference_channel):
+                raise ValueError("Alignment channel must be disabled or between 0 and 3")
+            if self.quad_relay and self.align_channel == self.reference_channel:
+                raise ValueError("Align XY and reference capture must use different digital inputs")
+            if not self.quad_relay and self.align_channel in (self.left_channel, self.right_channel, self.reference_channel):
                 raise ValueError("Align X must use a different digital input from left, right and reference capture")
         if type(self.active_high) is not bool:
             raise ValueError("Input polarity must be a boolean")
@@ -108,7 +120,9 @@ class MotionConfig:
         kwargs = {key: item for key, item in value.items() if key in names}
         if "pixels_per_right_press" not in kwargs and value.get("bench_axis") is False:
             kwargs["pixels_per_right_press"] = value.get("factory_pixels_per_press")
-        if kwargs.get("output_uid") == "23GY":
+        if kwargs.get("quad_relay"):
+            kwargs.setdefault("output_uid", cls.quad_defaults().output_uid)
+        elif kwargs.get("output_uid") == "23GY":
             kwargs["output_uid"] = cls.output_uid
             kwargs["pixels_per_right_press"] = None
         if "align_channel" not in kwargs and cls.align_channel in (
@@ -124,7 +138,7 @@ class MotionConfig:
                 kwargs.get("align_channel", cls.align_channel)):
             # Preserve older wiring that already assigns the new default input.
             kwargs["reference_channel"] = None
-        if type(kwargs.get("reference_channel")) is int and kwargs["reference_channel"] in (
+        if not kwargs.get("quad_relay") and type(kwargs.get("reference_channel")) is int and kwargs["reference_channel"] in (
                 kwargs.get("left_channel", cls.left_channel), kwargs.get("right_channel", cls.right_channel)):
             # Older profiles allowed capture to share a joystick contact.
             # Preserve the joystick wiring and disable the shared capture trigger.
@@ -252,7 +266,7 @@ class MotionController:
         self._reference_level: bool | None = None
         self._last_reference_capture_at: float | None = None
         self._align_level: bool | None = None
-        self.keyboard = (False, False)
+        self.keyboard = (False,) * 4
         self._saw_conflict = False
         self._manual_activity = False
         self._debounced = self.inputs4
@@ -277,7 +291,7 @@ class MotionController:
         self._presses_sent = 0
         self._corrections = 0
         self._confirmations = 0
-        self._alignment_search: DirectXSearch | None = None
+        self._alignment_search: AxisSearch | None = None
         self._stopping = False
 
     def configure(self, config: MotionConfig, revision: int = 0) -> None:
@@ -287,7 +301,7 @@ class MotionController:
         if self._operation or self._pending_operation:
             self.cancel("Motion settings changed", disarm=False)
         press_changed = any(getattr(old, name) != getattr(config, name) for name in
-                            ("host", "port", "output_uid", "left_channel", "right_channel", "pulse_ms"))
+                            ("host", "port", "quad_relay", "output_uid", "left_channel", "right_channel", "pulse_ms"))
         if press_changed and config.pixels_per_right_press == old.pixels_per_right_press:
             config = config.without_press_scale()
         if config.pixels_per_right_press is not None and not config.calibration_source_id and self.context.shape is not None:
@@ -325,10 +339,10 @@ class MotionController:
         self.context = context
         self._invalidate_camera_scale()
 
-    def set_keyboard(self, left: bool, right: bool, *, conflict=False, activity=False) -> None:
-        self.keyboard = bool(left), bool(right)
+    def set_keyboard(self, left: bool, right: bool, up=False, down=False, *, conflict=False, activity=False) -> None:
+        self.keyboard = bool(left), bool(right), bool(up), bool(down)
         after = self._logical_inputs(raw=True)
-        if conflict or (after[0] and after[1]):
+        if conflict or sum(after) > 1:
             self._saw_conflict = True
         if (activity or any(after)) and self._operation:
             self._manual_activity = True
@@ -386,12 +400,12 @@ class MotionController:
         if any(self._logical_inputs(raw=True)):
             held = []
             for name, channel in (("Left", self.config.left_channel), ("Right", self.config.right_channel)):
-                if self.inputs4[channel] == self.config.active_high:
+                if not self.config.quad_relay and self.inputs4[channel] == self.config.active_high:
                     level = "HIGH" if self.inputs4[channel] else "LOW"
                     held.append(f"{name} joystick input (channel {channel}: {level})")
-            held.extend(f"{name} arrow key" for name, pressed in zip(("Left", "Right"), self.keyboard) if pressed)
+            held.extend(f"{name} arrow key" for name, pressed in zip(("Left", "Right", "Up", "Down"), self.keyboard) if pressed)
             self.message = "Release controls before moving: " + "; ".join(held)
-            if not self.config.active_high and any(
+            if not self.config.quad_relay and not self.config.active_high and any(
                     not self.inputs4[channel] for channel in (self.config.left_channel, self.config.right_channel)):
                 self.message += ". If joystick inputs are LOW when released, check Active high"
             if not wait_for_neutral:
@@ -446,6 +460,8 @@ class MotionController:
         self._required_generation = generation
 
     def _logical_inputs(self, *, raw=False):
+        if self.config.quad_relay:
+            return self.keyboard
         inputs = self.inputs4 if raw else self._debounced
         left = inputs[self.config.left_channel] == self.config.active_high
         right = inputs[self.config.right_channel] == self.config.active_high
@@ -491,8 +507,6 @@ class MotionController:
         self._presses_sent = 0
         self._corrections = self._confirmations = 0
         self._alignment_search = None
-        if kind == "align_direct":
-            self._alignment_search = DirectXSearch(self.context.tolerance_px)
         self._feedback = None
         self._neutral_required = True
         self.phase = "calibrating" if kind == "calibration" else "aligning"
@@ -593,37 +607,45 @@ class MotionController:
                 self.phase = "ready"
                 self.message = f"Pixel calibration saved: {scale:+.6g} px/right press"
             return
-        error = abs(feedback.dx)
-        if error <= self.context.tolerance_px:
+        axes = {"X": feedback.dx}
+        if self.config.quad_relay:
+            axes["Y"] = feedback.dy
+        target = "XY" if self.config.quad_relay else "X"
+        largest = max(axes, key=lambda axis: abs(axes[axis]))
+        if abs(axes[largest]) <= self.context.tolerance_px:
+            self._alignment_search = None
             if not feedback.usable:
                 # Large Y may allow coarse X alignment, but it must never let
                 # an uncertain near-zero X estimate confirm completion.
                 self._confirmations = 0
-                self.message = "X is within tolerance; waiting for a valid match to confirm alignment"
+                self.message = f"{target} is within tolerance; waiting for a valid match to confirm alignment"
                 return
             self._confirmations += 1
-            self.message = f"Confirming X alignment ({self._confirmations}/3)"
+            self.message = f"Confirming {target} alignment ({self._confirmations}/3)"
             if self._confirmations >= 3:
                 self._operation = None
                 self._alignment_search = None
                 self.phase = "ready"
-                self.message = "X aligned"
+                self.message = f"{target} aligned"
             return
         self._confirmations = 0
         if self._corrections >= self.MAX_CORRECTIONS:
-            self.cancel("X alignment reached its 100 correction limit")
+            self.cancel(f"{target} alignment reached its 100 correction limit")
             return
+        search = self._alignment_search
+        if search is None or abs(axes[search.axis]) <= self.context.tolerance_px:
+            search = self._alignment_search = AxisSearch(largest, self.context.tolerance_px)
         try:
-            direction = self._alignment_search.next_direction(feedback.dx)
+            direction = search.next_direction(axes[search.axis])
         except ValueError as exc:
             self.cancel(str(exc))
             return
         self._corrections += 1
         self._stage = "moving"
         quality = " · uncertain match at large offset" if not feedback.usable else ""
-        label = "Aligning X"
-        if self._alignment_search.crossed_target:
-            label = "Crossed X target · reversing"
+        label = f"Aligning {search.axis}"
+        if search.crossed_target:
+            label = f"Crossed {search.axis} target · reversing"
         self.message = f"{label} · correction {self._corrections} ({direction.name.lower()}){quality}"
         self._press(direction, now, "align")
 
@@ -681,16 +703,13 @@ class MotionController:
             self._read_align_input()
         if self.state.fault and (self.armed or self._move or self._operation):
             self.cancel(f"Motion fault: {self.state.fault}", disarm=True)
-        left, right = self._logical_inputs()
-        # Raw conflicting contacts stop immediately; debounce only delays starts.
-        raw_left, raw_right = self._logical_inputs(raw=True)
-        # Releases are immediate. A debounced former direction must never
-        # survive a physical reversal while the new contact is settling.
-        left, right = left and raw_left, right and raw_right
-        if (raw_left and raw_right or self._saw_conflict) and not self._neutral_required:
+        raw = self._logical_inputs(raw=True)
+        pressed = [direction for direction, active, level in zip(KEY_DIRECTIONS, self._logical_inputs(), raw)
+                   if active and level]
+        if (sum(raw) > 1 or self._saw_conflict) and not self._neutral_required:
             self.cancel("Opposing directions: release both controls to continue", disarm=False)
         self._saw_conflict = False
-        if self._operation and (raw_left or raw_right or self._manual_activity):
+        if self._operation and (any(raw) or self._manual_activity):
             self.cancel("Manual input cancelled camera-feedback motion; release both controls", disarm=False)
         self._manual_activity = False
         if self._stopping:
@@ -719,20 +738,18 @@ class MotionController:
             self._pending_operation = None
             self._start_operation(kind, presses, now)
         self._process_operation(now)
-        if not raw_left and not raw_right:
+        if not any(raw):
             self._neutral_required = False
             if self.armed and self.phase == "waiting":
                 self.phase, self.message = "ready", "Ready · hold to nudge one move at a time"
-        direction = -1 if left and not right else 1 if right and not left else 0
-        if not raw_left and not raw_right:
-            direction = 0
+        direction = pressed[0] if len(pressed) == 1 else None
         if (self.armed and not self._neutral_required and not self._operation and
                 not self._stopping and direction):
             if direction != self._direction:
                 self._next_nudge_at = now
             if self._move is None and not self.state.busy and now >= self._next_nudge_at:
-                self._press(Direction(direction), now, "jog")
-                self.message = "Nudging left" if direction < 0 else "Nudging right"
+                self._press(direction, now, "jog")
+                self.message = f"Nudging {direction.name.lower()}"
         if self._operation == "align_direct" and self._move and self.state.alignment_contact_confirmed:
             self._actions.append(MotionAction("move_after_contact"))
         self._direction = direction
@@ -759,7 +776,7 @@ class MotionWorker(threading.Thread):
                  freshness_callback: Callable[[float], int] | None = None,
                  calibration_worker: MeasurementWorker | None = None, *,
                  joystick: JoystickPort | None = None):
-        super().__init__(name="single-axis-motion", daemon=True)
+        super().__init__(name="joystick-motion", daemon=True)
         self.controller = MotionController(config)
         if joystick is not None and hardware is not None:
             raise ValueError("Choose either a joystick port or relay hardware")
@@ -781,7 +798,7 @@ class MotionWorker(threading.Thread):
         self._lock = threading.Lock()
         self._commands = deque()
         self._context = MotionContext()
-        self._keyboard = (False, False)
+        self._keyboard = (False,) * 4
         self._keyboard_conflict = False
         self._keyboard_activity = False
         self._feedback = None
@@ -805,12 +822,12 @@ class MotionWorker(threading.Thread):
         with self._lock:
             self._context = context
 
-    def set_keyboard(self, left: bool, right: bool):
+    def set_keyboard(self, left: bool, right: bool, up=False, down=False):
         with self._lock:
-            keyboard = bool(left), bool(right)
+            keyboard = bool(left), bool(right), bool(up), bool(down)
             if keyboard != self._keyboard:
                 self._keyboard = keyboard
-                self._keyboard_conflict |= all(keyboard)
+                self._keyboard_conflict |= sum(keyboard) > 1
                 self._keyboard_activity |= any(keyboard)
 
     def _sync_keyboard(self):
@@ -912,7 +929,7 @@ class MotionWorker(threading.Thread):
         if name == "configure":
             config, revision = value
             connection_changed = any(getattr(config, key) != getattr(controller.config, key) for key in
-                                     ("host", "port", "digital_uid", "output_uid"))
+                                     ("host", "port", "digital_uid", "output_uid", "quad_relay"))
             if connection_changed and controller.connected:
                 self.joystick.shutdown()
                 controller.on_disconnected("Motion connection settings changed; reconnect")

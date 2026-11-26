@@ -283,3 +283,36 @@ def test_direct_alignment_obeys_readiness_checks(missing):
     controller.request_align_direct()
     assert not any(action.kind == "freshness" for action in controller.tick(1))
     assert controller._operation is None
+
+
+@pytest.mark.parametrize("dx,dy,first", [(4, -8, Direction.UP), (-8, 4, Direction.RIGHT),
+                                         (-8, 8, Direction.RIGHT)])
+def test_quad_stays_on_largest_axis_until_in_tolerance(dx, dy, first):
+    axis = DirectAxis(config=MotionConfig.quad_defaults())
+    assert moves(axis.sample(dx, dy=dy))[0].direction == first
+    axis.finish()
+    # Even when the other error becomes larger, keep correcting the active axis.
+    dx, dy = (12, -3) if first == Direction.UP else (-3, 12)
+    assert moves(axis.sample(dx, dy=dy))[0].direction == first
+    axis.finish()
+    second = Direction.RIGHT if first == Direction.UP else Direction.UP
+    dx, dy = (12, .5) if first == Direction.UP else (-.5, 12)
+    assert moves(axis.sample(dx, dy=dy))[0].direction == second
+    axis.finish()
+    # The second axis settled, but cross-axis motion displaced the first.
+    dx, dy = (.5, -3) if first == Direction.UP else (-3, .5)
+    assert moves(axis.sample(dx, dy=dy))[0].direction == first
+    axis.finish()
+    for _ in range(3):
+        assert not moves(axis.sample(.8, dy=-.8))
+    assert axis.controller.message == "XY aligned"
+
+
+def test_quad_y_reversal_and_unreachable_tolerance():
+    axis = DirectAxis(config=MotionConfig.quad_defaults())
+    for offset, direction in [(3, Direction.UP), (7, Direction.DOWN), (3, Direction.DOWN),
+                              (-2, Direction.UP), (3, Direction.DOWN)]:
+        assert moves(axis.sample(.2, dy=offset))[0].direction == direction
+        axis.finish()
+    assert not moves(axis.sample(.2, dy=-2))
+    assert "Requested Y tolerance" in axis.controller.message

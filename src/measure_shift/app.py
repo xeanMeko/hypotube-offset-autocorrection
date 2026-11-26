@@ -107,7 +107,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.brickd_process = None
         self._reference_capture_request = None
         self._last_digital_reference_at = None
-        self.motion = MotionWorker(hardware=motion_hardware, joystick=joystick, freshness_callback=self._request_motion_frames,
+        self.motion = MotionWorker(MotionConfig.quad_defaults(), hardware=motion_hardware, joystick=joystick, freshness_callback=self._request_motion_frames,
                                    calibration_worker=self.measurement)
         self._build_ui()
         self.axis_keyboard = AxisKeyboardFilter(self)
@@ -231,7 +231,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tolerance.setValue(1)
         self.tolerance.setSuffix(" px")
         tolerance_form = QtWidgets.QFormLayout()
-        tolerance_form.addRow(self.ui.label("Tolerance"), self.tolerance)
+        tolerance_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.tolerance_label = self.ui.label("Tolerance per axis")
+        tolerance_form.addRow(self.tolerance_label, self.tolerance)
         readouts.addLayout(tolerance_form)
         controls.addWidget(alignment, 1)
 
@@ -345,10 +347,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dock.changed.connect(self._analysis_changed)
         self.dock.capture_requested.connect(self.capture_inspection)
         self.dock.export_requested.connect(self.export_inspection)
-        self.motion_dock = MotionDock(parent=self, language=self.ui)
+        self.motion_dock = MotionDock(self.motion.controller.config, parent=self, language=self.ui)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.motion_dock)
         self.motion_dock.hide()
         self.tools_menu.addAction(self.motion_dock.toggleViewAction())
+        self.motion_controls.set_quad_relay(self.motion_dock.config.quad_relay)
         self.motion_dock.config_changed.connect(self._motion_config_changed)
         self.motion_controls.connect_button.toggled.connect(self._connect_motion)
         self.motion_controls.usb_access_button.clicked.connect(self._enable_brick_access)
@@ -505,6 +508,8 @@ class MainWindow(QtWidgets.QMainWindow):
                              max_feedback_age_s=max(1., 3 / max(.1, fps), 3 * total_ms / 1000))
 
     def _motion_config_changed(self, config):
+        self.motion_controls.set_quad_relay(config.quad_relay)
+        self.ui.bind(self.tolerance_label.setText, "Tolerance per axis" if config.quad_relay else "Tolerance")
         self._motion_config_revision = self.motion.configure(config)
         self._schedule_settings_save()
 
@@ -1005,7 +1010,8 @@ class MainWindow(QtWidgets.QMainWindow):
             state, color = "STALE MEASUREMENT", "#ff7979"
         elif not result.usable:
             state, color = "MATCH UNCERTAIN", "#ffcd66"
-        elif result.distance <= self.tolerance.value():
+        elif (max(abs(result.dx), abs(result.dy)) if self.motion_dock.config.quad_relay
+              else result.distance) <= self.tolerance.value():
             state, color = "ALIGNED", "#69dfb7"
         else:
             state, color = "OUTSIDE TOLERANCE", "#ffcd66"
@@ -1027,6 +1033,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._readout_samples.append((now, result.dx, result.dy))
             self._readout_key = pair.key
         if finite:
+            self.ui.bind(self.state.setToolTip, "Straight-line distance: {:.2f} px", result.distance)
             dx, dy = result.dx, result.dy
             if self._readout_samples:
                 count = len(self._readout_samples)
@@ -1036,6 +1043,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.x_value.setText(f"X   {dx:+z.1f} px")
             self.y_value.setText(f"Y   {dy:+z.1f} px")
         else:
+            self.ui.bind(self.state.setToolTip, "")
             self.x_value.setText("X   — px")
             self.y_value.setText("Y   — px")
 

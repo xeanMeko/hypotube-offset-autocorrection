@@ -1110,7 +1110,7 @@ def test_latest_keyboard_state_keeps_transient_conflict_and_manual_override(keys
     actions = worker.controller.tick(1.1)
     assert [action.kind for action in actions] == ["stop", "disable"]
     assert worker.controller._operation is None
-    assert worker.controller.keyboard == (False, False)
+    assert worker.controller.keyboard == (False,) * 4
 
 
 def test_settling_time_cannot_be_less_than_two_hundred_milliseconds():

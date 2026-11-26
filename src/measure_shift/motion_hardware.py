@@ -24,7 +24,8 @@ class MasterBrickAccessError(MotionHardwareError):
 
 
 class MotionHardware(Protocol):
-    def connect(self, host: str, port: int, digital_uid: str | None, output_uid: str) -> SilentStepperBench | None: ...
+    def connect(self, host: str, port: int, digital_uid: str | None, output_uid: str,
+                quad_relay: bool = False) -> SilentStepperBench | None: ...
     def press_output(self, channel: int, duration_ms: int) -> None: ...
     def release_outputs(self) -> None: ...
     def read_inputs(self) -> tuple[bool, bool, bool, bool]: ...
@@ -48,6 +49,7 @@ class TinkerforgeMotionHardware:
         self._relay = None
         self._bench: SilentStepperBench | None = None
         self._industrial_relay = False
+        self._quad_version = 0
         self._ready = False
         self._digital_v2 = False
         self._connection_error: str | None = None
@@ -71,7 +73,8 @@ class TinkerforgeMotionHardware:
         if not self._ready:
             raise MotionHardwareError("Motion hardware is disconnected")
 
-    def connect(self, host: str, port: int, digital_uid: str | None, output_uid: str) -> SilentStepperBench | None:
+    def connect(self, host: str, port: int, digital_uid: str | None, output_uid: str,
+                quad_relay: bool = False) -> SilentStepperBench | None:
         if self._ipcon is not None:
             raise MotionHardwareError("Disconnect motion hardware before connecting again")
         uids = [output_uid] if digital_uid is None else [output_uid, digital_uid]
@@ -86,8 +89,14 @@ class TinkerforgeMotionHardware:
             if digital_uid:
                 digital_v1_class = self._module_loader("tinkerforge.bricklet_industrial_digital_in_4").BrickletIndustrialDigitalIn4
                 digital_v2_class = self._module_loader("tinkerforge.bricklet_industrial_digital_in_4_v2").BrickletIndustrialDigitalIn4V2
-            dual_relay = self._module_loader("tinkerforge.bricklet_dual_relay").BrickletDualRelay
-            industrial_relay = self._module_loader("tinkerforge.bricklet_industrial_dual_relay").BrickletIndustrialDualRelay
+            if quad_relay:
+                quad_v1 = self._module_loader("tinkerforge.bricklet_industrial_quad_relay").BrickletIndustrialQuadRelay
+                quad_v2 = self._module_loader("tinkerforge.bricklet_industrial_quad_relay_v2").BrickletIndustrialQuadRelayV2
+                relay_types = (quad_v1, quad_v2)
+            else:
+                dual_relay = self._module_loader("tinkerforge.bricklet_dual_relay").BrickletDualRelay
+                industrial_relay = self._module_loader("tinkerforge.bricklet_industrial_dual_relay").BrickletIndustrialDualRelay
+                relay_types = (dual_relay, industrial_relay)
         except (ImportError, OSError, AttributeError) as exc:
             raise MotionHardwareError(
                 "Tinkerforge bindings are unavailable. Install measure-shift[motion] "
@@ -142,7 +151,7 @@ class TinkerforgeMotionHardware:
             with discovery_lock:
                 discovering = False
                 steppers = [uid for uid, identifier in identities.items()
-                            if identifier == SILENT_STEPPER_V2_IDENTIFIER]
+                            if not quad_relay and identifier == SILENT_STEPPER_V2_IDENTIFIER]
                 if len(steppers) > 1:
                     raise MotionHardwareError("Multiple Silent Steppers found. Connect only the intended axis and retry.")
                 watched_uids.update(steppers)
@@ -153,12 +162,14 @@ class TinkerforgeMotionHardware:
                 raise MasterBrickAccessError("A local Master Brick needs USB read/write permission.")
             if missing:
                 raise MotionHardwareError("Motion Bricklet not found: " + ", ".join(sorted(missing)))
-            relay_classes = {cls.DEVICE_IDENTIFIER: cls for cls in (dual_relay, industrial_relay)}
+            relay_classes = {cls.DEVICE_IDENTIFIER: cls for cls in relay_types}
             relay_class = relay_classes.get(identities[output_uid])
             if relay_class is None:
-                raise MotionHardwareError(f"UID {output_uid} is not a Dual Relay Bricklet")
+                model = "Quad" if quad_relay else "Dual"
+                raise MotionHardwareError(f"UID {output_uid} is not a {model} Relay Bricklet")
             self._relay = relay_class(output_uid, ipcon)
-            self._industrial_relay = relay_class is industrial_relay
+            self._industrial_relay = not quad_relay and relay_class is industrial_relay
+            self._quad_version = relay_types.index(relay_class) + 1 if quad_relay else 0
             self._relay.set_response_expected_all(True)
             self.release_outputs()
             if digital_uid:
@@ -194,19 +205,35 @@ class TinkerforgeMotionHardware:
 
     def press_output(self, channel: int, duration_ms: int) -> None:
         self._require_connected()
-        if (self._relay is None or type(channel) is not int or channel not in (0, 1)
+        if (self._relay is None or type(channel) is not int or channel not in range(4 if self._quad_version else 2)
                 or type(duration_ms) is not int or not 1 <= duration_ms <= 5000):
             raise MotionHardwareError("Invalid joystick relay pulse")
         # The original Dual Relay numbers its coils 1 and 2. The Industrial
         # Dual Relay numbers them 0 and 1. Both release on the device timer.
-        coil = channel if self._industrial_relay else channel + 1
+        if self._quad_version == 1:
+            self._check_quad_group()
+            mask = 1 << channel
+            self._call("Cannot pulse joystick relay", self._relay.set_monoflop, mask, mask, duration_ms)
+            return
+        coil = channel if self._industrial_relay or self._quad_version else channel + 1
         self._call("Cannot pulse joystick relay", self._relay.set_monoflop, coil, True, duration_ms)
 
     def release_outputs(self) -> None:
         if self._relay is None:
             return
+        if self._quad_version:
+            self._check_quad_group()
+            value = [False] * 4 if self._quad_version == 2 else 0
+            self._call("Cannot release joystick relays", self._relay.set_value, value)
+            return
         set_both = self._relay.set_value if self._industrial_relay else self._relay.set_state
         self._call("Cannot release joystick relays", set_both, False, False)
+
+    def _check_quad_group(self):
+        if self._quad_version == 1:
+            group = self._call("Cannot read Quad Relay grouping", self._relay.get_group)
+            if tuple(group) != ("n",) * 4:
+                raise MotionHardwareError("Restore the Quad Relay standalone group in Brick Viewer before moving")
 
     def _check_digital_group(self) -> None:
         if not self._digital_v2:

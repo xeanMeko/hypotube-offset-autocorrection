@@ -256,17 +256,26 @@ def test_old_connection_callback_does_not_invalidate_a_new_connection(sdk):
 
 
 @pytest.mark.parametrize("digital_version", [1, 2])
-def test_adapter_uses_real_optional_sdk_bindings_with_memory_transport(monkeypatch, digital_version):
+@pytest.mark.parametrize("relay_model", ["dual", "quad_v1", "quad_v2"])
+def test_adapter_uses_real_optional_sdk_bindings_with_memory_transport(monkeypatch, digital_version, relay_model):
     """Exercise actual SDK validation, method signatures and return namedtuples.
 
     The SDK is optional, and every transport operation is in memory. The real
     IPConnection.connect is blocked so this test cannot contact any hardware.
     """
     ip_module = pytest.importorskip("tinkerforge.ip_connection")
-    relay_module = pytest.importorskip("tinkerforge.bricklet_dual_relay")
+    modules = {
+        "dual": ("bricklet_dual_relay", "BrickletDualRelay"),
+        "quad_v1": ("bricklet_industrial_quad_relay", "BrickletIndustrialQuadRelay"),
+        "quad_v2": ("bricklet_industrial_quad_relay_v2", "BrickletIndustrialQuadRelayV2"),
+    }
+    module, class_name = modules[relay_model]
+    relay_module = pytest.importorskip(f"tinkerforge.{module}")
+    quad = relay_model != "dual"
+    uid = "2imB" if quad else "2j7T"
     di1_module = pytest.importorskip("tinkerforge.bricklet_industrial_digital_in_4")
     di2_module = pytest.importorskip("tinkerforge.bricklet_industrial_digital_in_4_v2")
-    relay_class = relay_module.BrickletDualRelay
+    relay_class = getattr(relay_module, class_name)
     digital_class = (di1_module.BrickletIndustrialDigitalIn4 if digital_version == 1
                      else di2_module.BrickletIndustrialDigitalIn4V2)
     transport = None
@@ -308,8 +317,8 @@ def test_adapter_uses_real_optional_sdk_bindings_with_memory_transport(monkeypat
 
         def enumerate(self):
             callback = self.callbacks[self.CALLBACK_ENUMERATE]
-            for uid, cls in (("2j7T", relay_class), ("27s4", digital_class)):
-                callback(uid, "master", "a", [2, 0, 0], [2, 0, 0], cls.DEVICE_IDENTIFIER,
+            for device_uid, cls in ((uid, relay_class), ("27s4", digital_class)):
+                callback(device_uid, "master", "a", [2, 0, 0], [2, 0, 0], cls.DEVICE_IDENTIFIER,
                          self.ENUMERATION_TYPE_AVAILABLE)
 
         def disconnect(self):
@@ -325,7 +334,10 @@ def test_adapter_uses_real_optional_sdk_bindings_with_memory_transport(monkeypat
                     return ["n", "n", "n", "n"]
                 assert function_id == digital_class.FUNCTION_GET_VALUE
                 return 0b1010 if digital_version == 1 else (False, True, False, True)
-            assert function_id in (relay_class.FUNCTION_SET_STATE, relay_class.FUNCTION_SET_MONOFLOP)
+            if relay_model == "quad_v1" and function_id == relay_class.FUNCTION_GET_GROUP:
+                return ["n"] * 4
+            release = relay_class.FUNCTION_SET_VALUE if quad else relay_class.FUNCTION_SET_STATE
+            assert function_id in (release, relay_class.FUNCTION_SET_MONOFLOP)
 
     def load(name):
         assert "stepper" not in name
@@ -334,12 +346,17 @@ def test_adapter_uses_real_optional_sdk_bindings_with_memory_transport(monkeypat
         return importlib.import_module(name)
 
     adapter = TinkerforgeMotionHardware(load, enumeration_timeout_s=.001)
-    adapter.connect("memory-only", 4223, "27s4", "2j7T")
+    adapter.connect("memory-only", 4223, "27s4", uid, quad)
     assert adapter.read_inputs() == (False, True, False, True)
-    adapter.press_output(1, 80)
+    for channel in range(4 if quad else 2):
+        adapter.press_output(channel, 80)
+        expected = {"dual": (channel + 1, True, 80), "quad_v1": (1 << channel, 1 << channel, 80),
+                    "quad_v2": (channel, True, 80)}
+        assert transport.requests[-1] == (uid, relay_class.FUNCTION_SET_MONOFLOP, expected[relay_model])
     adapter.shutdown()
-    assert ("2j7T", relay_class.FUNCTION_SET_MONOFLOP, (2, True, 80)) in transport.requests
-    assert transport.requests[-1] == ("2j7T", relay_class.FUNCTION_SET_STATE, (False, False))
+    expected_release = {"dual": (False, False), "quad_v1": (0,), "quad_v2": ([False] * 4,)}
+    release = relay_class.FUNCTION_SET_VALUE if quad else relay_class.FUNCTION_SET_STATE
+    assert transport.requests[-1] == (uid, release, expected_release[relay_model])
     assert transport.disconnected
 
 
@@ -349,7 +366,7 @@ def test_wired_joystick_rejects_non_direction_commands(sdk, invalid):
     controller = MotionController()
     joystick = WiredJoystick(adapter, lambda: controller.config)
     sdk.calls.clear()
-    with pytest.raises(ValueError, match="LEFT or RIGHT"):
+    with pytest.raises(ValueError, match="Invalid joystick direction"):
         joystick.pulse(invalid)
     assert sdk.calls == []
 
@@ -535,7 +552,7 @@ def test_camera_operations_wait_for_the_bench_motor_after_relay_release(sdk, ope
         port.shutdown()
 
 
-@pytest.mark.parametrize("direction", list(Direction))
+@pytest.mark.parametrize("direction", [Direction.LEFT, Direction.RIGHT])
 @pytest.mark.parametrize("active", [True, False])
 def test_alignment_requires_one_matching_relay_closure(sdk, direction, active):
     motor = install_bench_stepper(sdk)
